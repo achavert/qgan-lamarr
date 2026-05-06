@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: qgan_lamarr
+Version: 0.1.0
+Summary: Quantum Generative Adversarial Networks
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: tensorflow
+Requires-Dist: keras
+Requires-Dist: qiskit
+Requires-Dist: qiskit-aer
+Requires-Dist: pennylane
+Requires-Dist: dash
+Requires-Dist: plotly
+Requires-Dist: tqdm
+Requires-Dist: uproot
+Requires-Dist: dask[dataframe]
+Requires-Dist: pyarrow
+Requires-Dist: pandas
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"

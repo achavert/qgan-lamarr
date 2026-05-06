@@ -1,0 +1,23 @@
+{
+    "timestamp": "20260318_235812",
+    "epochs": 2000,
+    "shots": 1024,
+    "bins": 8,
+    "discriminator_lr": 0.001,
+    "initial_weights": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+    ],
+    "optimizer": "ADAM_PSR",
+    "lr": 0.01
+}

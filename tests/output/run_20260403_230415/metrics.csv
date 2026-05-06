@@ -1,0 +1,2 @@
+step,kullback_leibler,generator_entropy,kolmogorov_smirnov,wasserstein_distance,pearson_chi2,jensen_shannon
+0,0.6803295612335205,2.0769810676574707,0.2177734375,0.998046875,3946.01898138417,0.34654668

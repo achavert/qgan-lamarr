@@ -1,0 +1,28 @@
+{
+    "timestamp": "20260307_192915",
+    "epochs": 2000,
+    "shots": 1,
+    "discriminator_lr": 0.1,
+    "param_names": "ParameterView([ParameterVectorElement(\u03b8[0]), ParameterVectorElement(\u03b8[1]), ParameterVectorElement(\u03b8[2]), ParameterVectorElement(\u03b8[3]), ParameterVectorElement(\u03b8[4]), ParameterVectorElement(\u03b8[5]), ParameterVectorElement(\u03b8[6]), ParameterVectorElement(\u03b8[7]), ParameterVectorElement(\u03b8[8]), ParameterVectorElement(\u03b8[9]), ParameterVectorElement(\u03b8[10]), ParameterVectorElement(\u03b8[11]), ParameterVectorElement(\u03b8[12]), ParameterVectorElement(\u03b8[13]), ParameterVectorElement(\u03b8[14]), ParameterVectorElement(\u03b8[15]), ParameterVectorElement(\u03b8[16]), ParameterVectorElement(\u03b8[17])])",
+    "initial_weights": [
+        5.406525530432768,
+        0.8661546654692724,
+        4.151860773523221,
+        2.523680734892854,
+        2.3134609296330995,
+        3.0253615875869526,
+        4.7155803066454425,
+        3.099736541334175,
+        0.02855349683575509,
+        5.664021742450315,
+        2.5862022206289748,
+        2.284306542063943,
+        0.48129541572236156,
+        5.820546891425802,
+        5.124198371564271,
+        5.476406857813168,
+        1.8828841649882115,
+        3.3074447271719443
+    ],
+    "optimizer": "ADAM_PSR"
+}

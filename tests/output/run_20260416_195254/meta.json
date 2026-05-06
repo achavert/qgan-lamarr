@@ -1,0 +1,25 @@
+{
+    "timestamp": "20260416_195254",
+    "epochs": 2000,
+    "shots": 1024,
+    "baseline_js": [
+        0.11692487448453903,
+        0.07038599997758865
+    ],
+    "bins": 8,
+    "discriminator_lr": 0.0001,
+    "initial_weights": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+    ],
+    "optimizer": "ADAM_PSR",
+    "wasserstein": true,
+    "lr": 0.001
+}
