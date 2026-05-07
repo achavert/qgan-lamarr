@@ -49,7 +49,7 @@ class QGAN():
 
         # Simulation parameters
         self._sampler = StatevectorSampler()
-        self._nshots = 2**14
+        self._nshots = 2**10
 
         # Training parameters
         self.discriminator_lr = 1e-3
