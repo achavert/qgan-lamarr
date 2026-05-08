@@ -1,4 +1,4 @@
-# Quantum Generative Adversarial Networks for Lamarr fast-simulation at LHCb
+# Quantum Generative Adversarial Networks framework
 
 ## Installation
 ```bash
