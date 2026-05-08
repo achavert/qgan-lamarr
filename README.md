@@ -51,14 +51,14 @@ discriminator = Sequential([
     Dense(1, activation='linear') 
 ])
 
-# build generator circuit and discriminator model, then:
+# Build generator circuit and discriminator model and fit:
 model = QGAN(num_qubits = num_qubits,
              generator = qc,
              discriminator = discriminator,
              real_dist = real_dist)
 model.fit(epochs=1000, shots=2**10, opt='ADAM_PSR', lr=1e-3, manager=True)
 
-# monitor training
+# Monitor training
 dashboard = TrainingDashboard(run_dir="./output/run_<timestamp>")
 dashboard.run()
 ```
