@@ -450,7 +450,15 @@ class TrainingDashboard:
 
 
     
-    def run(self, port = 8050):
-        print(f"Monitoring run: {self.run_dir}")
-        print(f"Monitoring host: http://localhost:{port}")
-        self.app.run(debug = True, port = port)
+    def run(self, local = True, port = 8050):
+        if local:
+            print(f"Monitoring run: {self.run_dir}")
+            print(f"Monitoring host: http://localhost:{port}")
+            self.app.run(debug = True, port = port)
+        else :
+            import socket
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            print(f"Monitoring run:  {self.run_dir}")
+            print(f"Dashboard URL:   http://{ip}:{port}")
+            self.app.run(host="0.0.0.0", debug=False, port=port)
