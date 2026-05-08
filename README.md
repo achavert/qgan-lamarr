@@ -59,6 +59,6 @@ model = QGAN(num_qubits = num_qubits,
 model.fit(epochs=1000, shots=2**10, opt='ADAM_PSR', lr=1e-3, manager=True)
 
 # Monitor training
-dashboard = TrainingDashboard(run_dir="./output/run_<timestamp>")
+dashboard = TrainingDashboard()
 dashboard.run()
 ```
