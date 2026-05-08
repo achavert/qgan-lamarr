@@ -4,7 +4,7 @@ from .metrics       import (jensen_shannon, fidelity, wasserstein,
                             scoreKS, chi2, kullback_leibler_divergence,
                             generator_entropy, metric_avg)
 from .tools         import dict2vector, dict2sample
-from .distributions import SingleGaussian, MixedGaussian, MinMaxBinning
+from .distributions import SingleGaussian, MixedGaussian, MinMaxBinning, RangeBinning
 from .manager       import FileManager
 from .dashboard     import TrainingDashboard
 
@@ -18,10 +18,10 @@ __all__ = [
     # Metrics
     "jensen_shannon", "fidelity", "wasserstein", "scoreKS", "chi2",
     "kullback_leibler_divergence", "generator_entropy", "metric_avg",
-    # Data utilities
+    # Tools
     "dict2vector", "dict2sample",
     # Distributions
-    "SingleGaussian", "MixedGaussian", "MinMaxBinning",
-    # Infrastructure
+    "SingleGaussian", "MixedGaussian", "MinMaxBinning", "RangeBinning", 
+    # Manager & dashboard
     "FileManager", "TrainingDashboard",
 ]

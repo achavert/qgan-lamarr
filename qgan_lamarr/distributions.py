@@ -38,3 +38,19 @@ def MinMaxBinning(_data, _nbins):
 
         binned_data.update({format(int(b), f'0{int(np.log2(_nbins))}b') : bin_counts})
     return binned_data
+
+def RangeBinning(_data, _nbins, _range):
+    data_interval = _range[1] - _range[0]
+    bin_length = float(data_interval)/float(_nbins)
+    
+    binned_data = {}
+    for b in range(_nbins):
+        bin_min_val = _range[0] + bin_length * b
+        bin_max_val = _range[0] + bin_length * (b+1)
+        
+        bin_counts = sum(1 for x in _data if bin_min_val <= x < bin_max_val)
+        if b == _nbins-1: 
+            bin_counts += sum(1 for x in _data if x == bin_max_val)
+
+        binned_data.update({format(int(b), f'0{int(np.log2(_nbins))}b') : bin_counts})
+    return binned_data
