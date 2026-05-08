@@ -1,14 +1,15 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 from pathlib import Path
 import csv
 import json
+import socket
 
 import dash
-from dash import dcc, html, Input, Output
+from dash import dcc, html, Input, Output, State
 import plotly.graph_objects as go
 import io
 import base64
@@ -16,449 +17,570 @@ import tempfile
 
 import numpy as np
 import pickle
-from qiskit import QuantumCircuit, qasm3
+from qiskit import QuantumCircuit
 from qiskit.primitives import StatevectorSampler
 from qiskit.visualization import circuit_drawer
 import tensorflow as tf
 
+from .tools import label2bits
+
+
+_CLASS_COLORS = [
+    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+]
+
+# ── Shared styles ──────────────────────────────────────────────────────────────
+
+_IMAGE_CONTAINER = {"display": "flex", "justifyContent": "center",
+                    "alignItems": "center", "overflow": "auto", "padding": "10px"}
+_CIRCUIT_IMG     = {"maxWidth": "900px", "width": "100%", "height": "auto"}
+_MODEL_IMG       = {"maxWidth": "400px", "width": "100%", "height": "auto"}
+_GRAPH           = {"width": "100%", "height": "450px", "marginBottom": "30px"}
+_SAMPLE          = {"width": "100%", "height": "450px", "marginBottom": "30px"}
+_PAGE            = {"maxWidth": "1400px", "margin": "auto",
+                    "padding": "20px", "fontFamily": "Arial"}
+_SELECTOR        = {"width": "400px", "marginBottom": "30px",
+                    "fontFamily": "Arial", "fontSize": "14px"}
+_SELECTOR_ROW    = {"display": "flex", "alignItems": "center",
+                    "gap": "16px", "marginBottom": "30px"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  File readers  (stateless, receive run_dir explicitly)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _read_metadata(run_dir: Path) -> dict:
+    with open(run_dir / "meta.json") as f:
+        return json.load(f)
+
+def _read_parameters(run_dir: Path) -> list:
+    params = []
+    with open(run_dir / "params.csv") as f:
+        for row in csv.reader(f):
+            if row:
+                params.append([float(x) for x in row])
+    return params
+
+def _read_losses(run_dir: Path) -> list:
+    losses = []
+    with open(run_dir / "losses.csv") as f:
+        for row in csv.DictReader(f):
+            losses.append({"step": int(row["step"]),
+                           "generator_loss": float(row["generator_loss"]),
+                           "discriminator_loss": float(row["discriminator_loss"])})
+    return losses
+
+def _read_metrics(run_dir: Path) -> list:
+    result = []
+    with open(run_dir / "metrics.csv") as f:
+        for row in csv.DictReader(f):
+            row["step"] = int(row["step"])
+            for k in row:
+                if k != "step":
+                    row[k] = float(row[k])
+            result.append(row)
+    return result
+
+def _load_circuit(run_dir: Path):
+    with open(run_dir / "generator_circuit.qasm", "rb") as f:
+        return pickle.load(f)
+
+def _sample_circuit(run_dir: Path, sampler: StatevectorSampler,
+                    shots: int = 2**10) -> dict:
+    params = _read_parameters(run_dir)
+    if not params:
+        return {}
+    qc = _load_circuit(run_dir)
+    qc_run = qc.copy()
+    qc_run.measure_all()
+    param_dict = dict(zip(qc.parameters, params[-1]))
+    job = sampler.run([(qc_run, param_dict)], shots=shots)
+    return job.result()[0].data.meas.get_counts()
+
+def _sample_circuit_conditional(run_dir: Path, sampler: StatevectorSampler,
+                                label: int, num_classes: int,
+                                shots: int = 2**10) -> dict:
+    params = _read_parameters(run_dir)
+    if not params:
+        return {}
+    qc = _load_circuit(run_dir)
+    num_qubits = qc.num_qubits
+    encoding = QuantumCircuit(num_qubits)
+    for qubit in label2bits(label, num_qubits):
+        encoding.x(qubit)
+    qc_run = encoding.compose(qc)
+    qc_run.measure_all()
+    param_dict = dict(zip(qc.parameters, params[-1]))
+    job = sampler.run([(qc_run, param_dict)], shots=shots)
+    return job.result()[0].data.meas.get_counts()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Shared figure builders  (stateless)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _standardize(fig, height=450):
+    fig.update_layout(template="plotly_white", height=height,
+                      margin=dict(l=60, r=30, t=50, b=50),
+                      xaxis_title="Epoch")
+    return fig
+
+def _build_metadata_table(run_dir: Path):
+    meta = _read_metadata(run_dir)
+    rows = [html.Tr([
+        html.Td(str(k), style={"fontWeight": "bold", "padding": "4px 8px"}),
+        html.Td(str(v), style={"padding": "4px 8px"})])
+        for k, v in meta.items()]
+    return html.Table(rows, style={"borderCollapse": "collapse", "width": "100%",
+                                   "marginBottom": "20px", "border": "1px solid #ccc"})
+
+def _build_circuit_figure(run_dir: Path):
+    qc  = _load_circuit(run_dir)
+    fig = circuit_drawer(qc, output="mpl")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    img = base64.b64encode(buf.read()).decode()
+    return html.Div(
+        html.Img(src=f"data:image/png;base64,{img}", style=_CIRCUIT_IMG),
+        style=_IMAGE_CONTAINER)
+
+def _build_model_plot(run_dir: Path):
+    model = tf.keras.models.load_model(run_dir / "discriminator_model.keras")
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        tf.keras.utils.plot_model(
+            model, to_file=tmp.name, show_shapes=True,
+            show_layer_names=True, rankdir="TB",
+            expand_nested=True, show_layer_activations=True,
+            show_trainable=True)
+        with open(tmp.name, "rb") as f:
+            img = base64.b64encode(f.read()).decode()
+    return html.Div(
+        html.Img(src=f"data:image/png;base64,{img}", style=_MODEL_IMG),
+        style=_IMAGE_CONTAINER)
+
+def _build_loss_figure(run_dir: Path):
+    losses = _read_losses(run_dir)
+    meta   = _read_metadata(run_dir)
+    steps  = [l["step"] for l in losses]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=steps, y=[l["generator_loss"] for l in losses],
+                             mode="lines", name="Generator loss"))
+    fig.add_trace(go.Scatter(x=steps, y=[l["discriminator_loss"] for l in losses],
+                             mode="lines", name="Discriminator loss"))
+    ref = 0.0 if meta.get("wasserstein") else np.log(2)
+    txt = "0"  if meta.get("wasserstein") else "-log(1/2)"
+    fig.add_hline(y=ref, line_dash="dot", line_color="gray",
+                  annotation_text=txt, annotation_position="top right")
+    fig.update_layout(title="Losses", yaxis_title="Loss")
+    return _standardize(fig)
+
+def _build_metrics_figure(run_dir: Path):
+    met = _read_metrics(run_dir)
+    if not met:
+        return go.Figure()
+    meta  = _read_metadata(run_dir)
+    steps = [m["step"] for m in met]
+    fig   = go.Figure()
+    for key in met[0]:
+        if key != "step":
+            fig.add_trace(go.Scatter(x=steps, y=[m[key] for m in met],
+                                     mode="lines", name=key))
+    baseline = meta.get("baseline_js")
+    if baseline:
+        mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
+        fig.add_hline(y=mean_js, line_dash="dot", line_color="black",
+                      annotation_text="baseline JS", annotation_position="top left")
+        fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="gray")
+        fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="gray")
+    fig.update_layout(title="Metrics")
+    return _standardize(fig)
+
+def _build_param_heatmap(run_dir: Path):
+    params = _read_parameters(run_dir)
+    if not params:
+        return go.Figure()
+    z = np.mod(np.array(params).T, 2 * np.pi)
+    colorscale = [[0.0, "yellow"], [0.25, "cyan"],
+                  [0.75, "magenta"], [1.0, "yellow"]]
+    fig = go.Figure(data=go.Heatmap(
+        z=z, colorscale=colorscale, zsmooth=False, zmin=0, zmax=2 * np.pi,
+        colorbar=dict(title="θ",
+                      tickvals=[0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi],
+                      ticktext=["0", "π/2", "π", "3π/2", "2π"])))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(title="Parameter heatmap", yaxis_title="Parameter")
+    return _standardize(fig)
+
+def _build_param_velocity_heatmap(run_dir: Path):
+    params = _read_parameters(run_dir)
+    if len(params) < 2:
+        return go.Figure()
+    delta = np.angle(np.exp(1j * np.diff(np.array(params), axis=0)))
+    fig = go.Figure(data=go.Heatmap(
+        z=np.abs(delta).T, colorscale="Inferno",
+        colorbar=dict(title="|Δθ|"), zsmooth=False, zmin=0))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(title="Parameter velocity heatmap", yaxis_title="Parameter")
+    return _standardize(fig)
+
+def _build_sample_plot(run_dir: Path, sampler: StatevectorSampler):
+    qc     = _load_circuit(run_dir)
+    n      = qc.num_qubits
+    states = [format(b, f'0{n}b') for b in range(2 ** n)]
+    sample = _sample_circuit(run_dir, sampler)
+    values = [sample.get(s, 0) for s in states]
+    total  = sum(values) or 1
+    fig = go.Figure()
+    fig.add_bar(x=states, y=[v / total for v in values])
+    fig.update_layout(
+        title="Generated sample", xaxis_title="Bins",
+        yaxis_title="Probability", template="plotly_white",
+        yaxis=dict(range=[0, 1]),
+        xaxis=dict(tickmode="linear", tick0=0, dtick=max(1, 2**n // 16)))
+    return _standardize(fig)
+
+def _build_conditional_metrics_figure(run_dir: Path, num_classes: int):
+    met = _read_metrics(run_dir)
+    if not met:
+        return go.Figure()
+    meta  = _read_metadata(run_dir)
+    steps = [m["step"] for m in met]
+    fig   = go.Figure()
+    for k in range(num_classes):
+        color   = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+        js_key  = f"js_class_{k}"
+        fid_key = f"fidelity_class_{k}"
+        if js_key in met[0]:
+            fig.add_trace(go.Scatter(x=steps, y=[m[js_key] for m in met],
+                                     mode="lines", name=f"JS class {k}",
+                                     line=dict(color=color, dash="dot"), opacity=0.6))
+        if fid_key in met[0]:
+            fig.add_trace(go.Scatter(x=steps, y=[m[fid_key] for m in met],
+                                     mode="lines", name=f"Fidelity class {k}",
+                                     line=dict(color=color), opacity=0.55,
+                                     yaxis="y2"))
+    for key, label, style in [
+        ("js_aggregate",     "JS aggregate",          dict(color="black", width=2)),
+        ("js_aggregate_avg", "JS aggregate (avg)",    dict(color="black", width=2, dash="dash")),
+    ]:
+        if key in met[0]:
+            fig.add_trace(go.Scatter(x=steps, y=[m[key] for m in met],
+                                     mode="lines", name=label, line=style))
+    if "fidelity_aggregate" in met[0]:
+        fig.add_trace(go.Scatter(x=steps, y=[m["fidelity_aggregate"] for m in met],
+                                 mode="lines", name="Fidelity aggregate",
+                                 line=dict(color="darkblue", width=2), yaxis="y2"))
+    baseline = meta.get("baseline_js")
+    if baseline:
+        mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
+        fig.add_hline(y=mean_js, line_dash="dot", line_color="gray",
+                      annotation_text="baseline JS", annotation_position="top left")
+        fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="lightgray")
+        fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="lightgray")
+    fig.update_layout(
+        title="Conditional metrics",
+        yaxis=dict(title="Jensen-Shannon divergence"),
+        yaxis2=dict(title="Fidelity", overlaying="y", side="right", range=[0, 1]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white", height=500,
+        margin=dict(l=60, r=60, t=60, b=50))
+    return fig
+
+def _build_class_sample_plots(run_dir: Path, sampler: StatevectorSampler,
+                               num_classes: int):
+    qc     = _load_circuit(run_dir)
+    n      = qc.num_qubits
+    states = [format(b, f'0{n}b') for b in range(2 ** n)]
+    graphs = []
+    for k in range(num_classes):
+        sample = _sample_circuit_conditional(run_dir, sampler, k, num_classes)
+        values = [sample.get(s, 0) for s in states]
+        total  = sum(values) or 1
+        color  = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+        fig = go.Figure()
+        fig.add_bar(x=states, y=[v / total for v in values], marker_color=color)
+        fig.update_layout(
+            title=f"Generated sample — class {k}",
+            xaxis_title="Bins", yaxis_title="Probability",
+            template="plotly_white", yaxis=dict(range=[0, 1]),
+            xaxis=dict(tickmode="linear", tick0=0, dtick=max(1, 2**n // 16)),
+            height=380, margin=dict(l=50, r=20, t=50, b=40))
+        graphs.append(dcc.Graph(id=f"sample-class-{k}", figure=fig,
+                                style={"width": "100%", "marginBottom": "20px"}))
+    return graphs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Run selector helper
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _list_runs(output_dir: Path) -> list:
+    '''Return sorted list of run directory names found in output_dir.'''
+    if not output_dir.exists():
+        return []
+    return sorted([d.name for d in output_dir.iterdir()
+                   if d.is_dir() and (d / "meta.json").exists()],
+                  reverse=True)   # most recent first
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TrainingDashboard  —  unconditional, run-picker UI
+# ══════════════════════════════════════════════════════════════════════════════
 
 class TrainingDashboard:
-    PAGE_STYLE = {
-    "maxWidth": "1400px",
-    "margin": "auto",
-    "fontFamily": "Arial, sans-serif",
-    "padding": "20px"
-    }
-    
-    SECTION_STYLE = {
-        "marginBottom": "25px"
-    }
-    
-    GRAPH_STYLE = {
-        "height": "420px"
-    }
-    
-    IMAGE_CONTAINER_STYLE = {
-        "display": "flex",
-        "justifyContent": "center",
-        "alignItems": "center",
-        "overflow": "auto",
-        "padding": "10px"
-    }
-    
-    CIRCUIT_IMG_STYLE = {
-        "maxWidth": "900px",
-        "width": "100%",
-        "height": "auto"
-    }
-    
-    MODEL_IMG_STYLE = {
-        "maxWidth": "400px",
-        "width": "100%",
-        "height": "auto"
-    }
-    
-    GRAPH_STYLE = {
-    "width": "100%",
-    "height": "450px",
-    "marginBottom": "30px"
-    }
+    '''
+    Dashboard for unconditional QGAN runs.
 
-    SAMPLE_STYLE = {
-    "width": "60%",
-    "height": "600px",
-    "marginBottom": "30px"
-    }
-    
-    def __init__(self, run_dir, refresh_rate=2):
-        
-        self.run_dir = Path(run_dir)
+    No run_dir is required at construction — the user selects a run from a
+    dropdown inside the UI.  The output directory is scanned for available
+    runs every time the dropdown is opened (via a Refresh button).
+
+    Parameters
+    ----------
+    output_dir   : path to the directory that contains run_* subdirectories.
+                   Defaults to "./output".
+    refresh_rate : live-update interval in seconds (default 2).
+
+    Usage
+    -----
+        from qgan_lamarr import TrainingDashboard
+        TrainingDashboard().run()
+        # or point at a custom output location:
+        TrainingDashboard("/scratch/myproject/output").run()
+    '''
+
+    def __init__(self, output_dir: str = "./output", refresh_rate: float = 2):
+        self.output_dir   = Path(output_dir)
         self.refresh_rate = refresh_rate
+        self.sampler      = StatevectorSampler()
+        self.app          = dash.Dash(__name__)
+        self._setup_layout()
+        self._setup_callbacks()
 
-        self.param_file = self.run_dir / "params.csv"
-        self.loss_file = self.run_dir / "losses.csv"
-        self.metrics_file = self.run_dir / "metrics.csv"
-        self.metadata_file = self.run_dir / "meta.json"
-        self.generator_file = self.run_dir / "generator_circuit.qasm"
-        self.discriminator_file = self.run_dir / "discriminator_model.keras"
+    # ── Layout ─────────────────────────────────────────────────────────────────
 
-        
-        self.metadata = self.read_metadata()
-        self.app = dash.Dash(__name__)
-        
-        self.import_circuit()
-        self.sampler = StatevectorSampler()
-        self.setup_layout()        
-        
-        self.setup_callbacks()
-        
-        
-        
+    def _run_selector(self):
+        runs = _list_runs(self.output_dir)
+        options = [{"label": r, "value": r} for r in runs]
+        return html.Div([
+            dcc.Dropdown(
+                id="run-selector",
+                options=options,
+                value=runs[0] if runs else None,
+                placeholder="Select a run...",
+                clearable=False,
+                style=_SELECTOR),
+            html.Button("↻ Refresh list", id="refresh-btn",
+                        style={"height": "36px", "cursor": "pointer"}),
+        ], style=_SELECTOR_ROW)
 
-    '''
-    Load data functions
-    '''
-    
-    def read_metadata(self):
-        with open(self.metadata_file, "r") as f:
-            return json.load(f)
-
-    def read_parameters(self):
-        params = []
-        with open(self.param_file, "r") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                params.append([float(x) for x in row])
-        return params
-
-    def read_losses(self):
-        losses = []
-        with open(self.loss_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                losses.append({"step": int(row["step"]),
-                               "generator_loss": float(row["generator_loss"]),
-                               "discriminator_loss": float(row["discriminator_loss"])})
-        return losses
-
-    def read_metrics(self):
-        metrics = []
-        with open(self.metrics_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row["step"] = int(row["step"])
-                for k in row:
-                    if k != "step":
-                        row[k] = float(row[k])
-                metrics.append(row)
-        return metrics
-        
-    def import_circuit(self):
-        with open(self.generator_file, "rb") as f:
-            self.qc = pickle.load(f)
-        
-    def sample_circuit(self, shots = 2**10):
-        params = self.read_parameters()
-        if not params:
-            return {}
-        
-        qc_gen = self.qc.copy()
-        qc_gen.measure_all()
-        last_params = params[-1]
-        param_dict = dict(zip(self.qc.parameters, last_params))
-        pub = (qc_gen, param_dict)
-        job = self.sampler.run([pub], shots = shots)
-        counts = job.result()[0].data.meas.get_counts()
-        return counts
-        
-    def read_training(self):
-        params = self.read_parameters()
-        losses = self.read_losses()
-        metrics = self.read_metrics()
-
-    
-
-    '''
-    Build model summary
-    '''
-
-    
-    
-    def build_circuit_figure(self):
-        fig = circuit_drawer(self.qc, output = "mpl")
-    
-        buf = io.BytesIO()
-        fig.savefig(buf, format = "png", bbox_inches = "tight")
-        buf.seek(0)
-    
-        img_base64 = base64.b64encode(buf.read()).decode()
-    
-        return html.Div(html.Img(src = f"data:image/png;base64,{img_base64}", style = self.CIRCUIT_IMG_STYLE), 
-                        style=self.IMAGE_CONTAINER_STYLE)
-
-    def build_model_plot(self):
-        
-        model = tf.keras.models.load_model(self.discriminator_file)
-
-        with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
-    
-            tf.keras.utils.plot_model(
-                model,
-                to_file=tmp.name,
-                show_shapes=True,
-                show_dtype=False,
-                show_layer_names=True,
-                rankdir="TB",
-                expand_nested=True,
-                show_layer_activations=True,
-                show_trainable=True
-            )
-    
-            with open(tmp.name, "rb") as f:
-                img_base64 = base64.b64encode(f.read()).decode()
-    
-        return html.Div(html.Img(src =  f"data:image/png;base64,{img_base64}", 
-                                 style = self.MODEL_IMG_STYLE), style = self.IMAGE_CONTAINER_STYLE)
-        
-    def build_sample_plot(self):
-        sample = self.sample_circuit()
-        num_qubits = self.qc.num_qubits
-        states = [format(b, f'0{int(num_qubits)}b') for b in range(2**num_qubits)]
-        values = [sample.get(s,0) for s in states]
-
-        dens_val = [v/sum(values) for v in values]
-        
-        fig = go.Figure()
-        fig.add_bar(x = states, y= dens_val)
-
-        fig.update_layout(title = "Generated sample",
-                          xaxis_title = "Bins",
-                          yaxis_title = "Counts",
-                          template = "plotly_white",
-                          yaxis = dict(range=[0, 1]))
-        return fig
-
-        
-    '''
-    Build graphs functions
-    '''
-
-    def build_metadata_table(self):
-        rows = []
-        for key, value in self.metadata.items():
-            rows.append(html.Tr([html.Td(str(key), style={"fontWeight": "bold", "padding": "4px 8px"}),
-                                 html.Td(str(value), style={"padding": "4px 8px"})]))
-        return html.Table(rows, style={"borderCollapse": "collapse",
-                                       "width": "100%",
-                                       "marginBottom": "20px",
-                                       "border": "1px solid #ccc"})
-        
-    def build_loss_figure(self):
-
-        losses = self.read_losses()
-
-        steps = [l["step"] for l in losses]
-        g_loss = [l["generator_loss"] for l in losses]
-        d_loss = [l["discriminator_loss"] for l in losses]
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(x = steps,
-                                 y = g_loss,
-                                 mode = "lines",
-                                 name = "Generator loss"))
-
-        fig.add_trace(go.Scatter(x = steps,
-                                 y = d_loss,
-                                 mode = "lines",
-                                 name = "Discriminator loss"))
-        if self.metadata['wasserstein']:
-            ref = 0.0
-            txt = '0'
-        else :
-            ref = np.log(2)
-            txt = "-log(1/2)"
-
-        fig.add_hline(y = ref,
-                      line_dash = "dot",
-                      line_color = "gray",
-                      annotation_text = txt,
-                      annotation_position="top right")
-
-        fig.update_layout(title = "Losses",
-                          xaxis_title = "Epoch",
-                          yaxis_title = "Loss function")
-
-        return self.standardize_figure(fig)
-
-    def build_metrics_figure(self):
-
-        metrics = self.read_metrics()
-
-        if not metrics:
-            return go.Figure()
-
-        steps = [m["step"] for m in metrics]
-
-        fig = go.Figure()
-
-        for key in metrics[0]:
-            if key != "step":
-                fig.add_trace(go.Scatter(x = steps,
-                                         y = [m[key] for m in metrics],
-                                         mode = "lines",
-                                         name = key))
-                
-        fig.add_hline(y = self.metadata['baseline_js'][0],
-                      line_dash = "dot",
-                      line_color = "black",
-                      annotation_text = "baseline_js",
-                      annotation_position="top left")
-
-        fig.add_hline(y = self.metadata['baseline_js'][0] + self.metadata['baseline_js'][1],
-                      line_dash = "dot",
-                      line_color = "gray")
-
-        fig.add_hline(y = self.metadata['baseline_js'][0] - self.metadata['baseline_js'][1],
-                      line_dash = "dot",
-                      line_color = "gray")
-        
-        fig.update_layout(title="Metrics",
-                          xaxis_title = "Epoch")
-
-        return self.standardize_figure(fig)
-
-    def build_param_heatmap_figure(self):
-        """
-        Row = parameter, column = training step.
-        """
-        params = self.read_parameters()
-    
-        if not params:
-            return go.Figure()
-        
-        param_array = np.array(params).T
-        param_array_wrapped = np.mod(param_array, 2 * np.pi)
-        # phase_colorscale = [[0.0, "yellow"],
-        #                     [0.25, "green"],
-        #                     [0.50, "cyan"],
-        #                     [0.75, "red"],
-        #                     [1.0, "yellow"]]
-        phase_colorscale = [[0.0, "yellow"],
-                            [0.25, "cyan"],
-                            [0.75, "magenta"],
-                            [1.0, "yellow"]]
-        
-        fig = go.Figure(data=go.Heatmap(z = param_array_wrapped,
-                                        colorscale = phase_colorscale,
-                                        colorbar = dict(title="Parameter value", 
-                                                        tickvals=[0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi],
-                                                        ticktext=["0", "π/2", "π", "3π/2", "2π"]),
-                                        zsmooth = False,
-                                        zmin = 0,
-                                        zmax = 2*np.pi))
-        fig.update_yaxes(autorange="reversed")   
-        fig.update_layout(title = "Parameter heatmap",
-                          xaxis_title = "Epoch",
-                          yaxis_title = "Parameter")
-    
-        return self.standardize_figure(fig)
-
-    def build_param_velocity_heatmap_figure(self):
-        '''
-        Row = parameter, column = training step.
-        '''
-    
-        params = self.read_parameters()
-    
-        if len(params) < 2:
-            return go.Figure()
-    
-        param_array = np.array(params)
-    
-        delta = np.angle(np.exp(1j * np.diff(param_array, axis=0)))
-        
-        velocity = np.abs(delta).T
-    
-        fig = go.Figure(data=go.Heatmap(z = velocity,
-                                        colorscale = "Inferno",
-                                        colorbar = dict(title="|Δθ|"),
-                                        zsmooth = False,
-                                        zmin = 0))
-        fig.update_yaxes(autorange="reversed")                   
-        fig.update_layout(title = "Parameter velocity heatmap",
-                          xaxis_title = "Epoch",
-                          yaxis_title = "Parameter")
-        return self.standardize_figure(fig)
-
-
-
-    
-    '''
-    Dashboard layout
-    '''
-
-    def setup_layout(self):
+    def _setup_layout(self):
         self.app.layout = html.Div([
-    
-            html.H1("QGAN Training Dashboard", style={"marginBottom": "30px"}),
-    
-            html.Details([
-                html.Summary("Run metadata"),
-                self.build_metadata_table()
-            ], style={"marginBottom": "20px"}),
-    
-            html.Details([
-                html.Summary("Generator circuit"),
-                self.build_circuit_figure()
-            ], style={"marginBottom": "20px"}),
-    
-            html.Details([
-                html.Summary("Discriminator model"),
-                self.build_model_plot()
-            ], style={"marginBottom": "20px"}),
-    
-            dcc.Graph(id="loss-graph", style=self.GRAPH_STYLE),
-    
-            dcc.Graph(id="metrics-graph", style=self.GRAPH_STYLE),
-    
-            dcc.Graph(id="param-heatmap", style=self.GRAPH_STYLE),
-    
-            dcc.Graph(id="param-vel-heatmap", style=self.GRAPH_STYLE),
+            html.H1("QGAN Training Dashboard", style={"marginBottom": "20px"}),
+            self._run_selector(),
 
-            dcc.Graph(id="generated-sample", style=self.SAMPLE_STYLE),
-            
-            dcc.Interval(
-                id="interval",
-                interval=self.refresh_rate * 1000,
-                n_intervals=0
-            )
-    
-        ], style={
-            "maxWidth": "1400px",
-            "margin": "auto",
-            "padding": "20px",
-            "fontFamily": "Arial"
-        })
+            # Static panels (rebuilt when run changes)
+            html.Div(id="static-panels"),
+
+            # Live-updating graphs
+            dcc.Graph(id="loss-graph",        style=_GRAPH),
+            dcc.Graph(id="metrics-graph",     style=_GRAPH),
+            dcc.Graph(id="param-heatmap",     style=_GRAPH),
+            dcc.Graph(id="param-vel-heatmap", style=_GRAPH),
+            dcc.Graph(id="generated-sample",  style=_SAMPLE),
+
+            dcc.Interval(id="interval",
+                         interval=int(self.refresh_rate * 1000), n_intervals=0),
+        ], style=_PAGE)
+
+    # ── Callbacks ──────────────────────────────────────────────────────────────
+
+    def _setup_callbacks(self):
+        app = self.app
+
+        # Refresh the run list when the button is clicked
+        @app.callback(
+            Output("run-selector", "options"),
+            Output("run-selector", "value"),
+            Input("refresh-btn", "n_clicks"),
+            State("run-selector", "value"),
+            prevent_initial_call=True)
+        def refresh_runs(_, current):
+            runs    = _list_runs(self.output_dir)
+            options = [{"label": r, "value": r} for r in runs]
+            # Keep current selection if it still exists, else pick the newest
+            value = current if current in runs else (runs[0] if runs else None)
+            return options, value
+
+        # Rebuild static panels when the run changes
+        @app.callback(
+            Output("static-panels", "children"),
+            Input("run-selector", "value"))
+        def update_static(run_name):
+            if not run_name:
+                return html.P("No run selected.", style={"color": "gray"})
+            run_dir = self.output_dir / run_name
+            try:
+                return [
+                    html.Details([html.Summary("Run metadata"),
+                                  _build_metadata_table(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                    html.Details([html.Summary("Generator circuit"),
+                                  _build_circuit_figure(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                    html.Details([html.Summary("Discriminator model"),
+                                  _build_model_plot(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                ]
+            except Exception as e:
+                return html.P(f"Error loading run: {e}", style={"color": "red"})
+
+        # Live-update graphs every interval tick
+        @app.callback(
+            Output("loss-graph",        "figure"),
+            Output("metrics-graph",     "figure"),
+            Output("param-heatmap",     "figure"),
+            Output("param-vel-heatmap", "figure"),
+            Output("generated-sample",  "figure"),
+            Input("interval",           "n_intervals"),
+            Input("run-selector",       "value"))
+        def update_graphs(_, run_name):
+            empty = go.Figure()
+            if not run_name:
+                return empty, empty, empty, empty, empty
+            run_dir = self.output_dir / run_name
+            try:
+                return (
+                    _build_loss_figure(run_dir),
+                    _build_metrics_figure(run_dir),
+                    _build_param_heatmap(run_dir),
+                    _build_param_velocity_heatmap(run_dir),
+                    _build_sample_plot(run_dir, self.sampler),
+                )
+            except Exception as e:
+                err = go.Figure()
+                err.add_annotation(text=str(e), xref="paper", yref="paper",
+                                   x=0.5, y=0.5, showarrow=False)
+                return err, err, err, err, err
+
+    # ── Run ────────────────────────────────────────────────────────────────────
+
+    def run(self, port=None):
+        if port is None:
+            with socket.socket() as s:
+                s.bind(('', 0))
+                port = s.getsockname()[1]
+        ip = socket.gethostbyname(socket.gethostname())
+        print(f"Output directory: {self.output_dir}")
+        print(f"Dashboard URL:    http://{ip}:{port}")
+        self.app.run(host="0.0.0.0", debug=False, port=port)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ConditionalTrainingDashboard  —  CQGAN, run-picker UI
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ConditionalTrainingDashboard(TrainingDashboard):
     '''
-    Callbacks
+    Dashboard for CQGAN runs (X-gate encoding).
+    Inherits the run-selector UI; adds per-class sample plots and a
+    conditional metrics figure.
     '''
-    def setup_callbacks(self):
-        @self.app.callback(Output("loss-graph", "figure"),
-                           Output("metrics-graph", "figure"),
-                           Output("param-heatmap", "figure"),
-                           Output("param-vel-heatmap", "figure"),
-                           Output("generated-sample", "figure"),
-                           Input("interval", "n_intervals"))
-        def update_graphs(_):
-            loss_fig = self.build_loss_figure()
-            metric_fig = self.build_metrics_figure()
-            param_fig = self.build_param_heatmap_figure()
-            param_vel_fig = self.build_param_velocity_heatmap_figure()
-            sample_fig = self.build_sample_plot()
-            return loss_fig, metric_fig, param_fig, param_vel_fig, sample_fig
-                
-    def standardize_figure(self, fig):
-        fig.update_layout(
-            template="plotly_white",
-            height=450,
-            margin=dict(l=60, r=30, t=50, b=50),
-            xaxis=dict(title="Epoch")
-        )
-    
-        return fig
 
+    def _setup_layout(self):
+        self.app.layout = html.Div([
+            html.H1("CQGAN Training Dashboard", style={"marginBottom": "20px"}),
+            self._run_selector(),
 
-    
-    def run(self, local = True, port = None):
-        if local:
-            print(f"Monitoring run: {self.run_dir}")
-            print(f"Monitoring host: http://localhost:{port}")
-            self.app.run(debug = True, port = port)
-        else :
-            import socket
-            hostname = socket.gethostname()
-            ip = socket.gethostbyname(hostname)
-            print(f"Monitoring run:  {self.run_dir}")
-            print(f"Dashboard URL:   http://{ip}:{port}")
-            self.app.run(host="0.0.0.0", debug=False, port=port)
+            html.Div(id="static-panels"),
+
+            dcc.Graph(id="loss-graph",        style=_GRAPH),
+            dcc.Graph(id="metrics-graph",     style={**_GRAPH, "height": "500px"}),
+            dcc.Graph(id="param-heatmap",     style=_GRAPH),
+            dcc.Graph(id="param-vel-heatmap", style=_GRAPH),
+
+            html.H3("Generated samples per class",
+                    style={"marginTop": "10px", "marginBottom": "10px"}),
+            html.Div(id="class-sample-container"),
+
+            dcc.Interval(id="interval",
+                         interval=int(self.refresh_rate * 1000), n_intervals=0),
+        ], style=_PAGE)
+
+    def _setup_callbacks(self):
+        app = self.app
+
+        @app.callback(
+            Output("run-selector", "options"),
+            Output("run-selector", "value"),
+            Input("refresh-btn", "n_clicks"),
+            State("run-selector", "value"),
+            prevent_initial_call=True)
+        def refresh_runs(_, current):
+            runs    = _list_runs(self.output_dir)
+            options = [{"label": r, "value": r} for r in runs]
+            value   = current if current in runs else (runs[0] if runs else None)
+            return options, value
+
+        @app.callback(
+            Output("static-panels", "children"),
+            Input("run-selector", "value"))
+        def update_static(run_name):
+            if not run_name:
+                return html.P("No run selected.", style={"color": "gray"})
+            run_dir = self.output_dir / run_name
+            try:
+                return [
+                    html.Details([html.Summary("Run metadata"),
+                                  _build_metadata_table(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                    html.Details([html.Summary("Generator circuit (ansatz)"),
+                                  _build_circuit_figure(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                    html.Details([html.Summary("Discriminator model"),
+                                  _build_model_plot(run_dir)],
+                                 style={"marginBottom": "20px"}),
+                ]
+            except Exception as e:
+                return html.P(f"Error loading run: {e}", style={"color": "red"})
+
+        @app.callback(
+            Output("loss-graph",             "figure"),
+            Output("metrics-graph",          "figure"),
+            Output("param-heatmap",          "figure"),
+            Output("param-vel-heatmap",      "figure"),
+            Output("class-sample-container", "children"),
+            Input("interval",                "n_intervals"),
+            Input("run-selector",            "value"))
+        def update_graphs(_, run_name):
+            empty = go.Figure()
+            if not run_name:
+                return empty, empty, empty, empty, []
+            run_dir = self.output_dir / run_name
+            try:
+                meta        = _read_metadata(run_dir)
+                num_classes = int(meta.get("num_classes", 1))
+                return (
+                    _build_loss_figure(run_dir),
+                    _build_conditional_metrics_figure(run_dir, num_classes),
+                    _build_param_heatmap(run_dir),
+                    _build_param_velocity_heatmap(run_dir),
+                    _build_class_sample_plots(run_dir, self.sampler, num_classes),
+                )
+            except Exception as e:
+                err = go.Figure()
+                err.add_annotation(text=str(e), xref="paper", yref="paper",
+                                   x=0.5, y=0.5, showarrow=False)
+                return err, err, err, err, [html.P(str(e), style={"color": "red"})]
+
+    def run(self, port=None):
+        if port is None:
+            with socket.socket() as s:
+                s.bind(('', 0))
+                port = s.getsockname()[1]
+        ip = socket.gethostbyname(socket.gethostname())
+        print(f"Output directory: {self.output_dir}")
+        print(f"Dashboard URL:    http://{ip}:{port}")
+        self.app.run(host="0.0.0.0", debug=False, port=port)
