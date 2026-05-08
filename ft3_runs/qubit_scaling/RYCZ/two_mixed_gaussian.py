@@ -1,5 +1,8 @@
-from qgan_lamarr import QGAN, SingleGaussian, RangeBinning
-
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector 
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, InputLayer, LeakyReLU
+import QGAN, MixedGaussian, RangeBinning
 
 # Qubit scale
 num_qubits = 3
@@ -8,7 +11,7 @@ nbins = 2**num_qubits
 # Real distribution
 def sample_dist(_size, _nbins):
     _range = 0.25
-    _sample = SingleGaussian(mean = 0.0, sd = 0.1,shots = _size)
+    _sample = MixedGaussian(mean = [-1.0, 1.0], sd = [0.1, 0.1], shots = _size)
     return RangeBinning(_sample, _nbins = _nbins, _range = (-_range, _range))
 
 sample = sample_dist(2**10, nbins)
@@ -16,9 +19,6 @@ print(f'Real sample example: {sample}')
 
 
 # Quantum generator
-from qiskit import QuantumCircuit
-from qiskit.circuit import ParameterVector
-
 reps = 2
 qc = QuantumCircuit(num_qubits)
 qc.h(range(num_qubits))
@@ -38,9 +38,6 @@ for r in range(reps):
 
 
 # Classical discriminator
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, InputLayer, LeakyReLU
-
 discriminator = Sequential([
     InputLayer(shape=(nbins,)),
     Dense(50),
