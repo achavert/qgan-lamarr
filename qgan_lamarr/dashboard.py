@@ -450,7 +450,7 @@ class TrainingDashboard:
 
 
     
-    def run(self, local = True, port = 8050):
+    def run(self, local = True, port = None):
         if local:
             print(f"Monitoring run: {self.run_dir}")
             print(f"Monitoring host: http://localhost:{port}")
