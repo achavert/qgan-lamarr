@@ -194,7 +194,7 @@ def _build_metrics_figure(run_dir: Path):
         fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="gray")
         fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="gray")
     fig.update_layout(title="Metrics",
-                      range=[0, 1])
+                      yaxis=dict(range=[0, 1]))
     return _standardize(fig)
 
 def _build_param_heatmap(run_dir: Path):
