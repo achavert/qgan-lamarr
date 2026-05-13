@@ -19,8 +19,6 @@ def MixedGaussian(mean = [-2.0, 2.0], sd = [0.5, 0.5], shots = 2**10):
         samp = np.concatenate([samp, np.random.normal(loc = mean[d], scale = sd[d], size = shots//len(mean))])
     return samp
 
-def ConditionalGaussian(c, mean = 0.0, sd = 1.0, shots = 2**10):
-    return np.random.normal(loc = mean, scale = sd/c**(1/2), size = shots)
 
 
 '''

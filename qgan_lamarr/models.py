@@ -306,9 +306,9 @@ class QGAN():
         self.FileManager.update_metrics(_step, _metrics)
         
     
-class XCQGAN(QGAN):
+class XMapQCGAN(QGAN):
     '''
-    ## Conditional QGAN - XGate based encoding
+    ##Quantum Conditional GAN - XGate map encoding
 
     Before the trainable ansatz, X-gates are applied to the state initialization, depending on some input real value. Being X a random continous variable, the model should return the conditioned distribution P(Y|X). The enconding consist of binning the distribution of X, associating each bin with a state from the computational basis of the circuit. The ansatz should create an entanglement map that brings each input state to the corresponding output distribution.
     '''
@@ -335,11 +335,290 @@ class XCQGAN(QGAN):
                          wass = wass,
                          callback = callback,
                          seed = seed,)
- 
         self._num_classes = num_classes
         if class_weights is None:
             self._class_weights = np.ones(num_classes) / num_classes
         else:
             w = np.array(class_weights, dtype=float)
             self._class_weights = w / w.sum()
+
+        for c in range(self._num_classes):
+            self.metrics.update({f'jensen_shannon_c{c}' : [],
+                                 f'jensen_shannon_avg_c{c}' : [],
+                                 f'fidelity_c{c}': [],
+                                 f'fidelity_avg_c{c}' : []})
+
+        self.prepare_xmap()
+        
+        
+
+    '''
+    Sampling (generator & real distribution)
+    '''
+    def cond_generator_eval(self, _class: int, weights_gen: np.array) -> dict:
+        '''
+        Samples the generator circuit for the input weights, returns counts from measurement
+        '''
+        qc_input = self.xmap[_class].copy()
+        qc_ansatz = self._generator.copy()
+        qc_gen = qc_input.compose(qc_ansatz, range(self._num_qubits))
+        qc_gen.measure_all()
+        pub = (qc_gen, weights_gen)
+        job = self._sampler.run([pub], shots = self._nshots)
+        counts = job.result()[0].data.meas.get_counts()
+        return counts
+           
+    def cond_real_dist_eval(self, _class) -> dict:
+        '''
+        Samples the real distribution 
+        '''
+        return self._real_dist(_class, self._nshots, self._dim)   
+        
+    '''
+    Discriminator
+    ''' 
+    def cond_discriminator_forward(self, _class, sample: dict, training: bool = True):
+        '''
+        Discriminator forward pass
+        '''
+        x = dict2vector(sample, self._bins)   
+        x_norm = _class / max(self._num_classes - 1, 1)
+        x_cond = np.append(x, x_norm).astype(np.float32)      
+        x_tensor = tf.convert_to_tensor(x_cond[None, :], dtype = tf.float32)
+        return self._discriminator(x_tensor, training=training)
+
+
+    '''
+    Conditional loss functions
+    '''
+    def cond_generator_loss(self, _class, weights_gen: np.ndarray) -> float:
+
+        fake_sample = self.cond_generator_eval(_class, np.array(weights_gen))
+        d_fake = self.cond_discriminator_forward(_class, fake_sample, training = False)
+        
+        if self.wass:
+            '''
+            Wasserstein loss: -D(G(z)) 
+            '''
+            loss = -tf.reduce_mean(d_fake)
+        else:
+            '''
+            Non-saturating loss: -log(D(G(z))
+            '''
+            loss = -tf.math.log(d_fake + 1e-12)
+            
+        return np.array(loss.numpy().squeeze(), dtype = np.float64)
+        
+    def cond_discriminator_loss(self, _class, weights_gen: np.ndarray) -> tf.Tensor:
+
+        if self.wass:
+            '''
+            Wasserstein loss with Gradient Penalty: D(G(z)) - D(x) + lambda * GP
+            '''
+            fake_sample = self.cond_generator_eval(_class, weights_gen)
+            real_sample = self.cond_real_dist_eval(_class)
+            
+            x_norm = _class / max(self._num_classes - 1, 1)
+            x_fake = tf.convert_to_tensor(np.append(dict2vector(fake_sample, self._bins), x_norm)[None, :].astype(np.float32))
+            x_real = tf.convert_to_tensor(np.append(dict2vector(real_sample, self._bins), x_norm)[None, :].astype(np.float32))
+            
+            d_fake = self._discriminator(x_fake, training = True)
+            d_real = self._discriminator(x_real, training = True)
+            w_loss = tf.reduce_mean(d_fake) - tf.reduce_mean(d_real)
+            
+            alpha = tf.random.uniform([1, 1], minval=0., maxval=1.)
+            interpolated = alpha * x_real + (1 - alpha) * x_fake
+            
+            with tf.GradientTape() as gp_tape:
+                gp_tape.watch(interpolated)
+                d_interpolated = self._discriminator(interpolated, training = True)
+            grads = gp_tape.gradient(d_interpolated, interpolated)
+            norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=1) + 1e-12)
+            gp = tf.reduce_mean((norm - 1.0) ** 2)
+            lambda_gp = 10.0 
+            
+            return w_loss + lambda_gp * gp
+
+        else :
+            '''
+            GAN loss: - [ log(D(x)) + log(1 - D(G(z))) ]
+            '''
+            fake_sample = self.cond_generator_eval(_class, weights_gen)
+            real_sample = self.cond_real_dist_eval(_class)
+            
+            d_fake =  self.cond_discriminator_forward(_class, fake_sample, training = True)
+            d_real = self.cond_discriminator_forward(_class, real_sample, training = True)
+            loss = - 0.5 * (tf.math.log(1.0 - d_fake + 1e-12) + tf.math.log(d_real + 1e-12))
+            return tf.reduce_mean(loss)
+        
+    '''
+    Total loss functions
+    '''
+    def total_generator_loss(self, weights_gen: np.ndarray) -> float:
+        tot_gen_loss = 0.0
+        for _c in range(self._num_classes):
+            tot_gen_loss = tot_gen_loss + self._class_weights[_c] * self.cond_generator_loss(_c, weights_gen)
+        return tot_gen_loss
+
+    def total_discriminator_loss(self, weights_gen: np.ndarray) -> tf.Tensor:
+        tot_dis_loss = 0.0
+        for _c in range(self._num_classes):
+            tot_dis_loss = tot_dis_loss + self._class_weights[_c] * self.cond_discriminator_loss(_c, weights_gen)
+        return tot_dis_loss
+    
+    '''
+    Training
+    '''
+    def cond_train_discriminator(self, weights_gen: np.ndarray) -> float:
+        '''
+        One gradient update step for the discriminator
+        '''
+        with tf.GradientTape() as tape:
+            d_loss = self.total_discriminator_loss(weights_gen)
+            
+        grads = tape.gradient(d_loss, self._discriminator.trainable_variables)
+        self._discriminator_optimizer.apply_gradients(zip(grads, self._discriminator.trainable_variables))
+        return float(d_loss.numpy())
+
+    def fit(self, 
+            epochs: int = 100, 
+            step_balance: float = 1.0,
+            shots: int | None = None,
+            initial_weights: np.ndarray | None = None,
+            manager: bool | None = None,
+            opt: str | None = 'ADAM_PSR',
+            **opt_args):
+
+        '''
+            Training setup
+        '''
+        if shots is not None:
+            self._nshots = shots
+
+        if initial_weights is not None:
+            weights_gen = initial_weights
+        else :
+            if self._trained_generator_weights is not None:
+                weights_gen = self._trained_generator_weights
+            else :
+                weights_gen = np.zeros(self._generator.num_parameters)
+        self.baseline_js = self.cond_compute_baseline_js(n_samples = 50)
+
+        if manager:
+            metadata = {'epochs': epochs, 
+                        'shots': self._nshots,
+                        'baseline_js': self.baseline_js,
+                        'bins': self._dim,
+                        'num_classes': self._num_classes,
+                        'tranning_balance': step_balance,
+                        'discriminator_lr': self.discriminator_lr,
+                        'initial_weights': weights_gen,
+                        'optimizer': opt,
+                        'wasserstein': self.wass,
+                        **opt_args}
+            self.FileManager = FileManager(self._generator, self._discriminator, metadata)
+
+        optimizer = QGAN_optimizer(name = opt, **opt_args)
+        
+        '''
+        Training schedule
+        '''
+        print("Training started")
+        for stp in tqdm(range(epochs)):
+                
+            # Train discriminator
+            for _ in range(int(np.ceil(step_balance))):
+                d_loss_val = self.cond_train_discriminator(weights_gen)
+            self.discriminator_losses.append(d_loss_val)
+                    
+            # Train generator
+            for _ in range(int(np.ceil(1/step_balance))):
+                weights_gen, g_loss_val = optimizer.step(self.total_generator_loss, weights_gen)
+            self.generator_losses.append(g_loss_val)
+                
+            # Callback
+            if self._callback:
+                self._callback(weights_gen, g_loss_val)
+    
+            # Metrics
+            for c in range(self._num_classes):
+                current_sample = self.cond_get_sample(c, self._nshots, weights_gen = weights_gen)
+                real_dist_sample = self.cond_real_dist_eval(c)
+                self.cond_compute_metrics(c, current_sample, real_dist_sample, stp)
+            self.total_compute_metrics(stp)
+
+            if manager:
+                _metrics = {key: self.metrics[key][stp] for key in self.metrics.keys()}
+                self.manage(stp, weights_gen, g_loss_val, d_loss_val, _metrics)
+        
+        self._trained_generator_weights = weights_gen  
+
+        
+        print("Training completed")   
+
+    '''
+    Model evaluation and sampler   
+    '''
+    def cond_get_sample(self, _class, nsamples, weights_gen = None):
+        if weights_gen is None:
+            weights_gen = self._trained_generator_weights
+            
+        original_shots = self._nshots
+        self._nshots = nsamples
+        counts = self.cond_generator_eval(_class, weights_gen)
+        self._nshots = original_shots
+        return counts
+        
+    '''
+    Metrics
+    '''
+    def cond_compute_metrics(self, _class, sample1, sample2, stp):
+        js = metrics.jensen_shannon(sample1, sample2, self._bins)
+        fid = metrics.fidelity(sample1, sample2, self._bins)
+        
+        self.metrics[f'jensen_shannon_c{_class}'].append(js)
+        self.metrics[f'jensen_shannon_avg_c{_class}'].append(metrics.metric_avg(stp, self.metrics[f'jensen_shannon_c{_class}']))
+        self.metrics[f'fidelity_c{_class}'].append(fid)
+        self.metrics[f'fidelity_avg_c{_class}'].append(metrics.metric_avg(stp, self.metrics[f'fidelity_c{_class}']))
+    
+    def total_compute_metrics(self, stp):
+        js = np.sum([self._class_weights[c] * self.metrics[f'jensen_shannon_c{c}'][stp] for c in range(self._num_classes)])
+        fid = np.sum([self._class_weights[c] * self.metrics[f'fidelity_c{c}'][stp] for c in range(self._num_classes)])
+
+        self.metrics[f'jensen_shannon'].append(js)
+        self.metrics[f'jensen_shannon_avg'].append(metrics.metric_avg(stp, self.metrics[f'jensen_shannon']))
+        self.metrics[f'fidelity'].append(fid)
+        self.metrics[f'fidelity_avg'].append(metrics.metric_avg(stp, self.metrics[f'fidelity']))
+
+    def cond_compute_baseline_js(self, n_samples: int = 10) -> float:
+        '''
+        Average JS divergence between two independent samples of the real distribution (sampling noise floor).
+        '''
+        baseline_values = []
+        for _ in range(n_samples):
+            total_value = 0.0
+            for c in range(self._num_classes):
+                sample_a = self.cond_real_dist_eval(c)
+                sample_b = self.cond_real_dist_eval(c)
+            
+                vec_a = dict2vector(sample_a, self._bins)
+                vec_b = dict2vector(sample_b, self._bins)
+                total_value = total_value + self._class_weights[c] * jensenshannon(vec_a, vec_b)
+            baseline_values.append(total_value)
+            
+        return float(np.mean(baseline_values)), float(np.std(baseline_values)) 
+    
+    def prepare_xmap(self):
+        self.xmap = []
+        for xclass in self._bins:
+            xqc = QuantumCircuit(self._num_qubits)
+            for xbit in range(self._num_qubits):
+                if xclass[self._num_qubits-1-xbit] == '1':
+                    xqc.x(xbit)
+            self.xmap.append(xqc)
+
+    def manage(self, _step, _params, _gen_loss, _dis_loss, _metrics):
+        self.FileManager.update_param(_params)
+        self.FileManager.update_losses(_step, _gen_loss, _dis_loss)
+        self.FileManager.update_metrics(_step, _metrics)        
 

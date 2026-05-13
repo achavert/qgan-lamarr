@@ -6,7 +6,7 @@ from .metrics       import (jensen_shannon, fidelity, wasserstein,
 from .tools         import dict2vector, dict2sample
 from .distributions import SingleGaussian, MixedGaussian, MinMaxBinning, RangeBinning
 from .manager       import FileManager
-from .dashboard     import TrainingDashboard
+from .dashboard     import TrainingDashboard, XMapCQGANDashboard
 
 __version__ = "0.1.0"
 
@@ -23,5 +23,5 @@ __all__ = [
     # Distributions
     "SingleGaussian", "MixedGaussian", "MinMaxBinning", "RangeBinning", 
     # Manager & dashboard
-    "FileManager", "TrainingDashboard",
+    "FileManager", "TrainingDashboard", "XMapCQGANDashboard",
 ]
