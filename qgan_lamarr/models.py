@@ -320,6 +320,7 @@ class XMapQCGAN(QGAN):
                  real_dist: Callable[[int, int], dict],
                  num_classes: int,
                  class_weights: list | None = None,
+                 xmap: list | None = None,
                  wass: bool = False,
                  callback: Callable | None = None,
                  seed: int = 42) -> None:
@@ -347,8 +348,10 @@ class XMapQCGAN(QGAN):
                                  f'jensen_shannon_avg_c{c}' : [],
                                  f'fidelity_c{c}': [],
                                  f'fidelity_avg_c{c}' : []})
-
-        self.prepare_xmap()
+        if xmap is None:
+            self.prepare_xmap()
+        else :
+            self.xmap = xmap
         
         
 
@@ -490,7 +493,7 @@ class XMapQCGAN(QGAN):
             **opt_args):
 
         '''
-            Training setup
+        Training setup
         '''
         if shots is not None:
             self._nshots = shots
@@ -608,6 +611,35 @@ class XMapQCGAN(QGAN):
             
         return float(np.mean(baseline_values)), float(np.std(baseline_values)) 
     
+
+    # ---------------------------------------------------------------------------------------------------------
+    # Holevo bound (TESTING)
+    # ---------------------------------------------------------------------------------------------------------
+    def compute_cl_holevo_bound(self):
+        chi_indv = 0
+        for c in range(self._num_classes):
+            chi_indv = chi_indv + self._class_weights[c] * self.compute_indv_shannon_entropy_real(c)
+        chi_glob = self.compute_glob_shannon_entropy_real()
+        return chi_glob - chi_indv
+            
+    def compute_indv_shannon_entropy_real(self, _c):
+        samp = self.cond_real_dist_eval(_c)
+        vec = dict2vector(samp, self._bins)
+        return np.sum([-vec[_x]*np.log(vec[_x]+1e-12) for _x in range(self._dim)])
+    
+    def compute_glob_shannon_entropy_real(self):
+        glob_vec = np.zeros(self._dim)
+        for c in range(self._num_classes):
+            samp = self.cond_real_dist_eval(c)
+            vec = dict2vector(samp, self._bins)
+            glob_vec = glob_vec + self._class_weights[c] * vec
+        return np.sum([-glob_vec[_x]*np.log(glob_vec[_x]+1e-12) for _x in range(self._dim)])
+    # ---------------------------------------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------------------------------------
+
+
+
     def prepare_xmap(self):
         self.xmap = []
         for xclass in self._bins:
