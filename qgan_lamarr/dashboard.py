@@ -470,6 +470,39 @@ def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
     return cards
 
 
+
+def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
+    """
+    Draw the full conditional circuit for each class (xmap[k] composed with
+    the ansatz) and return them stacked inside a single Div, with a small
+    class label above each image.
+    """
+    import matplotlib.pyplot as plt
+    qc   = _load_circuit(run_dir)
+    xmap = _load_xmap(run_dir)
+    n    = qc.num_qubits
+    bins = [format(b, f"0{n}b") for b in range(2 ** n)]
+    rows = []
+    for k, enc in enumerate(xmap):
+        full_qc = enc.compose(qc, range(n))
+        fig = circuit_drawer(full_qc, output="mpl")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        buf.seek(0)
+        img = base64.b64encode(buf.read()).decode()
+        plt.close("all")
+        rows.append(html.Div([
+            html.Div(f"Class {k}  |{bins[k]}>",
+                     style={"fontWeight": "600", "fontSize": "13px",
+                            "color": "#555", "marginBottom": "6px",
+                            "marginTop": "14px" if k > 0 else "0"}),
+            html.Div(html.Img(src=f"data:image/png;base64,{img}",
+                              style=_CIRCUIT_IMG),
+                     style=_IMAGE_CONTAINER),
+        ]))
+    return html.Div(rows)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Run selector helper
 # ══════════════════════════════════════════════════════════════════════════════
@@ -753,10 +786,16 @@ class QGANDashboard:
                     html.Details([html.Summary(label),
                                   _build_circuit_figure(run_dir)],
                                  style={'marginBottom': '20px'}),
+                ]
+                if run_type == 'xmap' and (run_dir / 'xmap.pkl').exists():
+                    panels.append(
+                        html.Details([html.Summary('Conditional circuits per class'),
+                                      _build_xmap_circuit_panels(run_dir)],
+                                     style={'marginBottom': '20px'}))
+                panels.append(
                     html.Details([html.Summary('Discriminator model'),
                                   _build_model_plot(run_dir)],
-                                 style={'marginBottom': '20px'}),
-                ]
+                                 style={'marginBottom': '20px'}))
             except Exception as e:
                 panels = html.P(f'Error: {e}', style={'color': 'red'})
             return panels, run_type, crumb
