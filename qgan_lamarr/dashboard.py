@@ -507,10 +507,10 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
             # Circuit image
             html.Div(
                 html.Img(src=f"data:image/png;base64,{img}",
-                         style={"width": "100%", "height": "120px",
+                         style={"width": "100%", "height": "240px",
                                 "objectFit": "contain", "display": "block"}),
                 style={"padding": "6px", "background": "white",
-                       "height": "120px", "overflow": "hidden"}),
+                       "height": "240px", "overflow": "hidden"}),
         ], style={
             "display": "inline-block",
             "verticalAlign": "top",
