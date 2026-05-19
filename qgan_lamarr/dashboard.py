@@ -485,9 +485,9 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
     for k, enc in enumerate(xmap):
         color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
 
-        fig = circuit_drawer(enc, output="mpl", style={"figwidth": 3})
+        fig = circuit_drawer(enc, output="mpl", style={"figwidth": 2})
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=90)
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=72)
         buf.seek(0)
         img = base64.b64encode(buf.read()).decode()
         plt.close("all")
@@ -507,9 +507,10 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
             # Circuit image
             html.Div(
                 html.Img(src=f"data:image/png;base64,{img}",
-                         style={"width": "100%", "height": "auto",
-                                "display": "block"}),
-                style={"padding": "8px", "background": "white"}),
+                         style={"width": "100%", "height": "120px",
+                                "objectFit": "contain", "display": "block"}),
+                style={"padding": "6px", "background": "white",
+                       "height": "120px", "overflow": "hidden"}),
         ], style={
             "display": "inline-block",
             "verticalAlign": "top",
