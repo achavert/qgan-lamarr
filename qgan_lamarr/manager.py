@@ -26,6 +26,7 @@ class FileManager:
         self.metadata_file = self.run_dir / "meta.json"
         self.generator_file = self.run_dir / "generator_circuit.qasm"
         self.discriminator_file = self.run_dir / "discriminator_model.keras"
+        self.xmap_file = self.run_dir / "xmap.pkl"
 
         self.metrics_header_written = False
         
