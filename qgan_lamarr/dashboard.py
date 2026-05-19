@@ -484,8 +484,7 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
     bins = [format(b, f"0{n}b") for b in range(2 ** n)]
     rows = []
     for k, enc in enumerate(xmap):
-        full_qc = enc.compose(qc, range(n))
-        fig = circuit_drawer(full_qc, output="mpl")
+        fig = circuit_drawer(enc, output="mpl")
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight")
         buf.seek(0)
