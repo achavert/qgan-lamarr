@@ -316,59 +316,87 @@ def _build_class_sample_plots(run_dir: Path, sampler: StatevectorSampler,
 #  Run selector helper
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _list_runs(output_dir: Path) -> list:
-    '''Return sorted list of run directory names found in output_dir.'''
-    if not output_dir.exists():
-        return []
-    return sorted([d.name for d in output_dir.iterdir()
-                   if d.is_dir() and (d / "meta.json").exists()],
-                  reverse=True)   # most recent first
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  TrainingDashboard  —  unconditional, run-picker UI
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TrainingDashboard:
+def _list_runs(root: Path) -> list[dict]:
     '''
-    Dashboard for unconditional QGAN runs.
+    Recursively scan root for any directory containing meta.json.
+    Returns a list of dicts suitable for a Dash dropdown:
+        label : display string showing path relative to root
+        value : path string relative to root  (use root / value to resolve)
+    Sorted newest-first by directory name.
+    '''
+    if not root.exists():
+        return []
+    hits = sorted(
+        [p.parent for p in root.rglob("meta.json") if p.parent.is_dir()],
+        key=lambda p: p.name,
+        reverse=True)
+    return [{"label": str(p.relative_to(root)), "value": str(p.relative_to(root))}
+            for p in hits]
 
-    No run_dir is required at construction — the user selects a run from a
-    dropdown inside the UI.  The output directory is scanned for available
-    runs every time the dropdown is opened (via a Refresh button).
+
+def _detect_run_type(run_dir: Path) -> str:
+    '''
+    Read meta.json and return  'xmap'  if num_classes is present,
+    otherwise  'qgan'.
+    '''
+    try:
+        meta = _read_metadata(run_dir)
+        return 'xmap' if 'num_classes' in meta else 'qgan'
+    except Exception:
+        return 'qgan'
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  QGANDashboard  —  unified dashboard for QGAN and XMapQCGAN runs
+# ══════════════════════════════════════════════════════════════════════════════
+
+class QGANDashboard:
+    '''
+    Unified dashboard for QGAN and XMapQCGAN runs.
+
+    Scans the given root directory recursively for any subdirectory containing
+    a  meta.json  file — so any folder structure is supported.  The dropdown
+    label shows the path relative to root, making it easy to navigate runs
+    stored in subdirectories (e.g.  muons/run_20260519_120000).
+
+    On run selection, meta.json is read to detect the run type:
+        - 'num_classes' present  →  XMapQCGAN  (conditional graphs + per-class
+          sample grid)
+        - absent                  →  QGAN        (unconditional graphs + single
+          sample plot)
+
+    The layout contains both panel sets; type-detection controls which one is
+    shown and which is hidden via a hidden 'run-type' Store.
 
     Parameters
     ----------
-    output_dir   : path to the directory that contains run_* subdirectories.
-                   Defaults to "./output".
+    root         : root directory to scan recursively. Defaults to '.'.
     refresh_rate : live-update interval in seconds (default 2).
 
     Usage
     -----
-        from qgan_lamarr import TrainingDashboard
-        TrainingDashboard().run()
-        # or point at a custom output location:
-        TrainingDashboard("/scratch/myproject/output").run()
+        from qgan_lamarr import QGANDashboard
+        QGANDashboard(".").run()
+        QGANDashboard("/scratch/myproject").run()
     '''
 
-    def __init__(self, output_dir: str = "./output", refresh_rate: float = 2):
-        self.output_dir   = Path(output_dir)
+    def __init__(self, root: str = ".", refresh_rate: float = 2):
+        self.root         = Path(root)
         self.refresh_rate = refresh_rate
         self.sampler      = StatevectorSampler()
         self.app          = dash.Dash(__name__)
         self._setup_layout()
         self._setup_callbacks()
 
-    # ── Layout ─────────────────────────────────────────────────────────────────
+    # ── Run selector ───────────────────────────────────────────────────────────
 
     def _run_selector(self):
-        runs = _list_runs(self.output_dir)
-        options = [{"label": r, "value": r} for r in runs]
+        runs = _list_runs(self.root)
         return html.Div([
             dcc.Dropdown(
                 id="run-selector",
-                options=options,
-                value=runs[0] if runs else None,
+                options=runs,
+                value=runs[0]["value"] if runs else None,
                 placeholder="Select a run...",
                 clearable=False,
                 style=_SELECTOR),
@@ -376,20 +404,36 @@ class TrainingDashboard:
                         style={"height": "36px", "cursor": "pointer"}),
         ], style=_SELECTOR_ROW)
 
+    # ── Layout ─────────────────────────────────────────────────────────────────
+
     def _setup_layout(self):
         self.app.layout = html.Div([
-            html.H1("QGAN Training Dashboard", style={"marginBottom": "20px"}),
+            html.H1("QGAN Dashboard", style={"marginBottom": "20px"}),
+
             self._run_selector(),
 
-            # Static panels (rebuilt when run changes)
+            # Run-type store — written by update_static, read by update_graphs
+            dcc.Store(id="run-type", data="qgan"),
+
+            # Static panels: metadata, circuit, discriminator
             html.Div(id="static-panels"),
 
-            # Live-updating graphs
+            # Shared graphs (both run types)
             dcc.Graph(id="loss-graph",        style=_GRAPH),
-            dcc.Graph(id="metrics-graph",     style=_GRAPH),
+            dcc.Graph(id="metrics-graph",     style={**_GRAPH, "height": "520px"}),
             dcc.Graph(id="param-heatmap",     style=_GRAPH),
             dcc.Graph(id="param-vel-heatmap", style=_GRAPH),
-            dcc.Graph(id="generated-sample",  style=_SAMPLE),
+
+            # QGAN-only: single sample plot
+            html.Div(id="sample-panel",
+                     children=[dcc.Graph(id="generated-sample", style=_SAMPLE)]),
+
+            # XMapQCGAN-only: per-class sample grid
+            html.Div(id="class-sample-panel", children=[
+                html.H3("Generated samples per class",
+                        style={"marginTop": "10px", "marginBottom": "12px"}),
+                html.Div(id="class-sample-container"),
+            ]),
 
             dcc.Interval(id="interval",
                          interval=int(self.refresh_rate * 1000), n_intervals=0),
@@ -400,34 +444,37 @@ class TrainingDashboard:
     def _setup_callbacks(self):
         app = self.app
 
-        # Refresh the run list when the button is clicked
+        # ── Refresh run list ───────────────────────────────────────────────────
         @app.callback(
             Output("run-selector", "options"),
             Output("run-selector", "value"),
-            Input("refresh-btn", "n_clicks"),
-            State("run-selector", "value"),
+            Input("refresh-btn",   "n_clicks"),
+            State("run-selector",  "value"),
             prevent_initial_call=True)
         def refresh_runs(_, current):
-            runs    = _list_runs(self.output_dir)
-            options = [{"label": r, "value": r} for r in runs]
-            # Keep current selection if it still exists, else pick the newest
-            value = current if current in runs else (runs[0] if runs else None)
-            return options, value
+            runs   = _list_runs(self.root)
+            values = [r["value"] for r in runs]
+            value  = current if current in values else (values[0] if values else None)
+            return runs, value
 
-        # Rebuild static panels when the run changes
+        # ── Static panels + run-type detection ────────────────────────────────
         @app.callback(
             Output("static-panels", "children"),
-            Input("run-selector", "value"))
-        def update_static(run_name):
-            if not run_name:
-                return html.P("No run selected.", style={"color": "gray"})
-            run_dir = self.output_dir / run_name
+            Output("run-type",      "data"),
+            Input("run-selector",   "value"))
+        def update_static(run_value):
+            if not run_value:
+                return html.P("No run selected.", style={"color": "gray"}), "qgan"
+            run_dir  = self.root / run_value
+            run_type = _detect_run_type(run_dir)
+            circuit_label = ("Generator ansatz circuit"
+                             if run_type == "xmap" else "Generator circuit")
             try:
-                return [
+                panels = [
                     html.Details([html.Summary("Run metadata"),
                                   _build_metadata_table(run_dir)],
                                  style={"marginBottom": "20px"}),
-                    html.Details([html.Summary("Generator circuit"),
+                    html.Details([html.Summary(circuit_label),
                                   _build_circuit_figure(run_dir)],
                                  style={"marginBottom": "20px"}),
                     html.Details([html.Summary("Discriminator model"),
@@ -435,35 +482,55 @@ class TrainingDashboard:
                                  style={"marginBottom": "20px"}),
                 ]
             except Exception as e:
-                return html.P(f"Error loading run: {e}", style={"color": "red"})
+                panels = html.P(f"Error loading run: {e}", style={"color": "red"})
+            return panels, run_type
 
-        # Live-update graphs every interval tick
+        # ── Live graphs ────────────────────────────────────────────────────────
         @app.callback(
-            Output("loss-graph",        "figure"),
-            Output("metrics-graph",     "figure"),
-            Output("param-heatmap",     "figure"),
-            Output("param-vel-heatmap", "figure"),
-            Output("generated-sample",  "figure"),
-            Input("interval",           "n_intervals"),
-            Input("run-selector",       "value"))
-        def update_graphs(_, run_name):
-            empty = go.Figure()
-            if not run_name:
-                return empty, empty, empty, empty, empty
-            run_dir = self.output_dir / run_name
+            Output("loss-graph",              "figure"),
+            Output("metrics-graph",           "figure"),
+            Output("param-heatmap",           "figure"),
+            Output("param-vel-heatmap",       "figure"),
+            Output("generated-sample",        "figure"),
+            Output("class-sample-container",  "children"),
+            Output("sample-panel",            "style"),
+            Output("class-sample-panel",      "style"),
+            Input("interval",                 "n_intervals"),
+            Input("run-selector",             "value"),
+            State("run-type",                 "data"))
+        def update_graphs(_, run_value, run_type):
+            empty      = go.Figure()
+            show, hide = {}, {"display": "none"}
+
+            if not run_value:
+                return empty, empty, empty, empty, empty, [], show, hide
+
+            run_dir = self.root / run_value
             try:
-                return (
-                    _build_loss_figure(run_dir),
-                    _build_metrics_figure(run_dir),
-                    _build_param_heatmap(run_dir),
-                    _build_param_velocity_heatmap(run_dir),
-                    _build_sample_plot(run_dir, self.sampler),
-                )
+                loss_fig  = _build_loss_figure(run_dir)
+                param_fig = _build_param_heatmap(run_dir)
+                vel_fig   = _build_param_velocity_heatmap(run_dir)
+
+                if run_type == "xmap":
+                    meta        = _read_metadata(run_dir)
+                    num_classes = int(meta.get("num_classes", 2))
+                    metrics_fig = _build_xmap_metrics_figure(run_dir, num_classes)
+                    class_cards = _build_xmap_class_samples(
+                        run_dir, self.sampler, num_classes)
+                    return (loss_fig, metrics_fig, param_fig, vel_fig,
+                            empty, class_cards, hide, show)
+                else:
+                    metrics_fig = _build_metrics_figure(run_dir)
+                    sample_fig  = _build_sample_plot(run_dir, self.sampler)
+                    return (loss_fig, metrics_fig, param_fig, vel_fig,
+                            sample_fig, [], show, hide)
+
             except Exception as e:
                 err = go.Figure()
                 err.add_annotation(text=str(e), xref="paper", yref="paper",
                                    x=0.5, y=0.5, showarrow=False)
-                return err, err, err, err, err
+                return err, err, err, err, err, [
+                    html.P(f"Error: {e}", style={"color": "red"})], show, hide
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
@@ -473,282 +540,11 @@ class TrainingDashboard:
                 s.bind(('', 0))
                 port = s.getsockname()[1]
         ip = socket.gethostbyname(socket.gethostname())
-        print(f"Output directory: {self.output_dir}")
-        print(f"Dashboard URL:    http://{ip}:{port}")
+        print(f"Scanning: {self.root}")
+        print(f"Dashboard URL: http://{ip}:{port}")
         self.app.run(host="0.0.0.0", debug=False, port=port)
 
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  XMapCQGAN dashboard figure builders  (stateless)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _load_xmap(run_dir: Path) -> list:
-    '''Load the pickled xmap list of QuantumCircuits saved by FileManager.save_xmap.'''
-    with open(run_dir / "xmap.pkl", "rb") as f:
-        return pickle.load(f)
-
-
-def _xmap_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
-                         label: int, shots: int = 2**10) -> dict:
-    '''
-    Reproduce XMapQCGAN.cond_generator_eval exactly:
-    load the saved xmap circuit for this label, compose with the ansatz,
-    bind the latest parameters and sample.
-
-    Works for both the default xmap (X-gate encoding) and any custom xmap
-    passed by the user at construction time, because the actual circuits
-    are loaded from disk rather than reconstructed.
-    '''
-    params = _read_parameters(run_dir)
-    if not params:
-        return {}
-    qc     = _load_circuit(run_dir)
-    xmap   = _load_xmap(run_dir)
-    qc_run = xmap[label].compose(qc, range(qc.num_qubits))
-    qc_run.measure_all()
-    param_dict = dict(zip(qc.parameters, params[-1]))
-    job = sampler.run([(qc_run, param_dict)], shots=shots)
-    return job.result()[0].data.meas.get_counts()
-
-
-def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
-    '''
-    Metrics figure for XMapCQGAN.
-
-    Matches the key scheme written by XMapCQGAN.cond_compute_metrics and
-    total_compute_metrics:
-        per-class : jensen_shannon_c{k}, fidelity_c{k}          (dotted, low opacity)
-        aggregate : jensen_shannon, jensen_shannon_avg           (solid black, left axis)
-                    fidelity, fidelity_avg                       (solid darkblue, right axis)
-    '''
-    met = _read_metrics(run_dir)
-    if not met:
-        return go.Figure()
-    meta  = _read_metadata(run_dir)
-    steps = [m['step'] for m in met]
-    fig   = go.Figure()
-
-    # Per-class JS — left axis, dotted
-    for k in range(num_classes):
-        key   = f'jensen_shannon_c{k}'
-        color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
-        if key in met[0]:
-            fig.add_trace(go.Scatter(
-                x=steps, y=[m[key] for m in met],
-                mode='lines', name=f'JS c{k}',
-                line=dict(color=color, dash='dot'), opacity=0.55))
-
-    # Per-class fidelity — right axis, solid
-    for k in range(num_classes):
-        key   = f'fidelity_c{k}'
-        color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
-        if key in met[0]:
-            fig.add_trace(go.Scatter(
-                x=steps, y=[m[key] for m in met],
-                mode='lines', name=f'Fidelity c{k}',
-                line=dict(color=color), opacity=0.45,
-                yaxis='y2'))
-
-    # Aggregate JS — left axis, bold
-    for key, label, style in [
-        ('jensen_shannon',     'JS aggregate',       dict(color='black', width=2)),
-        ('jensen_shannon_avg', 'JS aggregate (avg)', dict(color='black', width=2, dash='dash')),
-    ]:
-        if key in met[0]:
-            fig.add_trace(go.Scatter(
-                x=steps, y=[m[key] for m in met],
-                mode='lines', name=label, line=style))
-
-    # Aggregate fidelity — right axis, bold
-    for key, label, style in [
-        ('fidelity',     'Fidelity aggregate',       dict(color='darkblue', width=2)),
-        ('fidelity_avg', 'Fidelity aggregate (avg)', dict(color='darkblue', width=2, dash='dash')),
-    ]:
-        if key in met[0]:
-            fig.add_trace(go.Scatter(
-                x=steps, y=[m[key] for m in met],
-                mode='lines', name=label, line=style,
-                yaxis='y2'))
-
-    # Baseline JS band
-    baseline = meta.get('baseline_js')
-    if baseline:
-        mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
-        fig.add_hline(y=mean_js, line_dash='dot', line_color='gray',
-                      annotation_text='baseline JS', annotation_position='top left')
-        fig.add_hline(y=mean_js + std_js, line_dash='dot', line_color='lightgray')
-        fig.add_hline(y=max(0., mean_js - std_js), line_dash='dot', line_color='lightgray')
-
-    fig.update_layout(
-        title='Conditional metrics — XMapCQGAN',
-        xaxis_title='Epoch',
-        yaxis=dict(title='Jensen-Shannon divergence', range=[0, 1]),
-        yaxis2=dict(title='Fidelity', overlaying='y', side='right', range=[0, 1]),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        template='plotly_white', height=520,
-        margin=dict(l=60, r=60, t=70, b=50))
-    return fig
-
-
-def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
-                               num_classes: int) -> list:
-    '''
-    2-column grid of bar charts, one per class.
-    Each chart title shows the input basis state  |bitstring>
-    so it's immediately clear which computational state the generator started from.
-    '''
-    qc     = _load_circuit(run_dir)
-    n      = qc.num_qubits
-    bins   = [format(b, f'0{n}b') for b in range(2 ** n)]
-    states = bins                            # x-axis labels = all output bins
-    dtick  = max(1, 2**n // 16)
-
-    cards = []
-    for k in range(num_classes):
-        sample = _xmap_sample_circuit(run_dir, sampler, k)
-        values = [sample.get(s, 0) for s in states]
-        total  = sum(values) or 1
-        color  = _CLASS_COLORS[k % len(_CLASS_COLORS)]
-
-        fig = go.Figure()
-        fig.add_bar(x=states, y=[v / total for v in values], marker_color=color)
-        fig.update_layout(
-            title=f'Class {k}  —  input |{bins[k]}>',
-            xaxis_title='Output bins', yaxis_title='Probability',
-            template='plotly_white',
-            yaxis=dict(range=[0, 1]),
-            xaxis=dict(tickmode='linear', tick0=0, dtick=dtick),
-            height=320,
-            margin=dict(l=45, r=15, t=45, b=40),
-            showlegend=False)
-
-        # 2-column layout: even-indexed cards get right margin, odd get none
-        cards.append(html.Div(
-            dcc.Graph(figure=fig, id=f'xmap-sample-c{k}'),
-            style={
-                'width': '48%',
-                'display': 'inline-block',
-                'verticalAlign': 'top',
-                'marginBottom': '16px',
-                'marginRight': '2%' if k % 2 == 0 else '0',
-            }))
-    return cards
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  XMapCQGANDashboard
-# ══════════════════════════════════════════════════════════════════════════════
-
-class XMapCQGANDashboard(TrainingDashboard):
-    '''
-    Dashboard for XMapCQGAN runs.
-
-    Inherits from TrainingDashboard:
-        run-selector dropdown, refresh button, static panels (metadata /
-        circuit / discriminator), loss graph, parameter heatmaps, live
-        interval updates, random-port binding, cluster-friendly IP printing.
-
-    Overrides / adds:
-        - Metrics figure  matching XMapCQGAN key scheme
-          (jensen_shannon_c{k}, fidelity_c{k}, jensen_shannon, fidelity, …)
-        - Per-class sample grid  in a 2-column layout, each chart labelled
-          with the input basis state  |bitstring>  so the conditioning is
-          immediately visible.
-        - Removes the unconditional "generated-sample" graph (not meaningful
-          without specifying a class).
-
-    Usage
-    -----
-        from qgan_lamarr import XMapCQGANDashboard
-        XMapCQGANDashboard("./output").run()
-    '''
-
-    def _setup_layout(self):
-        self.app.layout = html.Div([
-            html.H1('XMapCQGAN Training Dashboard',
-                    style={'marginBottom': '20px'}),
-            self._run_selector(),
-
-            html.Div(id='static-panels'),
-
-            dcc.Graph(id='loss-graph',        style=_GRAPH),
-            dcc.Graph(id='metrics-graph',     style={**_GRAPH, 'height': '520px'}),
-            dcc.Graph(id='param-heatmap',     style=_GRAPH),
-            dcc.Graph(id='param-vel-heatmap', style=_GRAPH),
-
-            html.H3('Generated samples per class',
-                    style={'marginTop': '10px', 'marginBottom': '12px',
-                           'fontFamily': 'Arial'}),
-            html.Div(id='class-sample-container'),
-
-            dcc.Interval(id='interval',
-                         interval=int(self.refresh_rate * 1000), n_intervals=0),
-        ], style=_PAGE)
-
-    def _setup_callbacks(self):
-        app = self.app
-
-        @app.callback(
-            Output('run-selector', 'options'),
-            Output('run-selector', 'value'),
-            Input('refresh-btn',   'n_clicks'),
-            State('run-selector',  'value'),
-            prevent_initial_call=True)
-        def refresh_runs(_, current):
-            runs    = _list_runs(self.output_dir)
-            options = [{'label': r, 'value': r} for r in runs]
-            value   = current if current in runs else (runs[0] if runs else None)
-            return options, value
-
-        @app.callback(
-            Output('static-panels', 'children'),
-            Input('run-selector',   'value'))
-        def update_static(run_name):
-            if not run_name:
-                return html.P('No run selected.', style={'color': 'gray'})
-            run_dir = self.output_dir / run_name
-            try:
-                return [
-                    html.Details([html.Summary('Run metadata'),
-                                  _build_metadata_table(run_dir)],
-                                 style={'marginBottom': '20px'}),
-                    html.Details([html.Summary('Generator ansatz circuit'),
-                                  _build_circuit_figure(run_dir)],
-                                 style={'marginBottom': '20px'}),
-                    html.Details([html.Summary('Discriminator model'),
-                                  _build_model_plot(run_dir)],
-                                 style={'marginBottom': '20px'}),
-                ]
-            except Exception as e:
-                return html.P(f'Error loading run: {e}', style={'color': 'red'})
-
-        @app.callback(
-            Output('loss-graph',             'figure'),
-            Output('metrics-graph',          'figure'),
-            Output('param-heatmap',          'figure'),
-            Output('param-vel-heatmap',      'figure'),
-            Output('class-sample-container', 'children'),
-            Input('interval',                'n_intervals'),
-            Input('run-selector',            'value'))
-        def update_graphs(_, run_name):
-            empty = go.Figure()
-            if not run_name:
-                return empty, empty, empty, empty, []
-            run_dir = self.output_dir / run_name
-            try:
-                meta        = _read_metadata(run_dir)
-                num_classes = int(meta.get('num_classes', 2))
-                return (
-                    _build_loss_figure(run_dir),
-                    _build_xmap_metrics_figure(run_dir, num_classes),
-                    _build_param_heatmap(run_dir),
-                    _build_param_velocity_heatmap(run_dir),
-                    _build_xmap_class_samples(run_dir, self.sampler, num_classes),
-                )
-            except Exception as e:
-                err = go.Figure()
-                err.add_annotation(text=str(e), xref='paper', yref='paper',
-                                   x=0.5, y=0.5, showarrow=False)
-                return err, err, err, err, [
-                    html.P(f'Error: {e}', style={'color': 'red'})]
+# Backwards-compatible aliases
+TrainingDashboard    = QGANDashboard
+XMapCQGANDashboard   = QGANDashboard
