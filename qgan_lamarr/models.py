@@ -520,6 +520,7 @@ class XMapQCGAN(QGAN):
                         'wasserstein': self.wass,
                         **opt_args}
             self.FileManager = FileManager(self._generator, self._discriminator, metadata)
+            self.FileManager.save_xmap(self.xmap)
 
         optimizer = QGAN_optimizer(name = opt, **opt_args)
         

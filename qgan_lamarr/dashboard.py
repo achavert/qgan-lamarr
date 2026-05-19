@@ -483,29 +483,29 @@ class TrainingDashboard:
 #  XMapCQGAN dashboard figure builders  (stateless)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _load_xmap(run_dir: Path) -> list:
+    '''Load the pickled xmap list of QuantumCircuits saved by FileManager.save_xmap.'''
+    with open(run_dir / "xmap.pkl", "rb") as f:
+        return pickle.load(f)
+
+
 def _xmap_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
                          label: int, shots: int = 2**10) -> dict:
     '''
-    Reproduce XMapCQGAN.cond_generator_eval:
-    apply X gates from the label's entry in _bins, compose with the ansatz,
-    then sample with the latest saved parameters.
+    Reproduce XMapQCGAN.cond_generator_eval exactly:
+    load the saved xmap circuit for this label, compose with the ansatz,
+    bind the latest parameters and sample.
+
+    Works for both the default xmap (X-gate encoding) and any custom xmap
+    passed by the user at construction time, because the actual circuits
+    are loaded from disk rather than reconstructed.
     '''
     params = _read_parameters(run_dir)
     if not params:
         return {}
-    qc   = _load_circuit(run_dir)
-    n    = qc.num_qubits
-    bins = [format(b, f'0{n}b') for b in range(2 ** n)]
-
-    # Reproduce prepare_xmap indexing from models.py:
-    # qubit i gets X if bit (n-1-i) of the label's bitstring is '1'
-    bitstr   = bins[label]
-    encoding = QuantumCircuit(n)
-    for xbit in range(n):
-        if bitstr[n - 1 - xbit] == '1':
-            encoding.x(xbit)
-
-    qc_run = encoding.compose(qc)
+    qc     = _load_circuit(run_dir)
+    xmap   = _load_xmap(run_dir)
+    qc_run = xmap[label].compose(qc, range(qc.num_qubits))
     qc_run.measure_all()
     param_dict = dict(zip(qc.parameters, params[-1]))
     job = sampler.run([(qc_run, param_dict)], shots=shots)

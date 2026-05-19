@@ -45,6 +45,10 @@ class FileManager:
             pickle.dump(self.gen, f)
 
         self.dis.save(self.discriminator_file)
+    
+    def save_xmap(self, xmap: list):
+        with open(self.xmap_file, "wb") as f:
+            pickle.dump(xmap, f)
 
     def update_param(self, _params):
         with open(self.param_file, "a") as f:
