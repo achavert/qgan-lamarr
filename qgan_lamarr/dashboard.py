@@ -484,9 +484,9 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
     bins = [format(b, f"0{n}b") for b in range(2 ** n)]
     rows = []
     for k, enc in enumerate(xmap):
-        fig = circuit_drawer(enc, output="mpl")
+        fig = circuit_drawer(enc, output="mpl", style={"figwidth": 4})
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight")
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
         buf.seek(0)
         img = base64.b64encode(buf.read()).decode()
         plt.close("all")
@@ -496,7 +496,7 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
                             "color": "#555", "marginBottom": "6px",
                             "marginTop": "14px" if k > 0 else "0"}),
             html.Div(html.Img(src=f"data:image/png;base64,{img}",
-                              style=_CIRCUIT_IMG),
+                              style={"maxWidth": "350px", "height": "auto"}),
                      style=_IMAGE_CONTAINER),
         ]))
     return html.Div(rows)
