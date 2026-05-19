@@ -322,6 +322,154 @@ def _build_class_sample_plots(run_dir: Path, sampler: StatevectorSampler,
     return graphs
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  XMapQCGAN figure builders  (stateless)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _load_xmap(run_dir: Path) -> list:
+    """Load the pickled xmap list of QuantumCircuits saved by FileManager.save_xmap."""
+    with open(run_dir / "xmap.pkl", "rb") as f:
+        return pickle.load(f)
+
+
+def _xmap_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
+                         label: int, shots: int = 2**10) -> dict:
+    """
+    Reproduce XMapQCGAN.cond_generator_eval exactly:
+    load the saved xmap circuit for this label, compose with the ansatz,
+    bind the latest parameters and sample.
+    Works for both the default xmap and any custom xmap passed by the user.
+    """
+    params = _read_parameters(run_dir)
+    if not params:
+        return {}
+    qc     = _load_circuit(run_dir)
+    xmap   = _load_xmap(run_dir)
+    qc_run = xmap[label].compose(qc, range(qc.num_qubits))
+    qc_run.measure_all()
+    param_dict = dict(zip(qc.parameters, params[-1]))
+    job = sampler.run([(qc_run, param_dict)], shots=shots)
+    return job.result()[0].data.meas.get_counts()
+
+
+def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
+    """
+    Metrics figure for XMapQCGAN.
+    Per-class keys  : jensen_shannon_c{k}, fidelity_c{k}
+    Aggregate keys  : jensen_shannon, jensen_shannon_avg, fidelity, fidelity_avg
+    """
+    met = _read_metrics(run_dir)
+    if not met:
+        return go.Figure()
+    meta  = _read_metadata(run_dir)
+    steps = [m["step"] for m in met]
+    fig   = go.Figure()
+
+    # Per-class JS — left axis, dotted
+    for k in range(num_classes):
+        key   = f"jensen_shannon_c{k}"
+        color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+        if key in met[0]:
+            fig.add_trace(go.Scatter(
+                x=steps, y=[m[key] for m in met],
+                mode="lines", name=f"JS c{k}",
+                line=dict(color=color, dash="dot"), opacity=0.55))
+
+    # Per-class fidelity — right axis, solid
+    for k in range(num_classes):
+        key   = f"fidelity_c{k}"
+        color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+        if key in met[0]:
+            fig.add_trace(go.Scatter(
+                x=steps, y=[m[key] for m in met],
+                mode="lines", name=f"Fidelity c{k}",
+                line=dict(color=color), opacity=0.45,
+                yaxis="y2"))
+
+    # Aggregate JS — left axis, bold
+    for key, label, style in [
+        ("jensen_shannon",     "JS aggregate",       dict(color="black", width=2)),
+        ("jensen_shannon_avg", "JS aggregate (avg)", dict(color="black", width=2, dash="dash")),
+    ]:
+        if key in met[0]:
+            fig.add_trace(go.Scatter(
+                x=steps, y=[m[key] for m in met],
+                mode="lines", name=label, line=style))
+
+    # Aggregate fidelity — right axis, bold
+    for key, label, style in [
+        ("fidelity",     "Fidelity aggregate",       dict(color="darkblue", width=2)),
+        ("fidelity_avg", "Fidelity aggregate (avg)", dict(color="darkblue", width=2, dash="dash")),
+    ]:
+        if key in met[0]:
+            fig.add_trace(go.Scatter(
+                x=steps, y=[m[key] for m in met],
+                mode="lines", name=label, line=style,
+                yaxis="y2"))
+
+    # Baseline JS band
+    baseline = meta.get("baseline_js")
+    if baseline:
+        mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
+        fig.add_hline(y=mean_js, line_dash="dot", line_color="gray",
+                      annotation_text="baseline JS", annotation_position="top left")
+        fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="lightgray")
+        fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="lightgray")
+
+    fig.update_layout(
+        title="Conditional metrics — XMapQCGAN",
+        xaxis_title="Epoch",
+        yaxis=dict(title="Jensen-Shannon divergence", range=[0, 1]),
+        yaxis2=dict(title="Fidelity", overlaying="y", side="right", range=[0, 1]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white", height=520,
+        margin=dict(l=60, r=60, t=70, b=50))
+    return fig
+
+
+def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
+                               num_classes: int) -> list:
+    """
+    2-column grid of bar charts, one per class.
+    Each chart title shows the input basis state |bitstring>.
+    """
+    qc     = _load_circuit(run_dir)
+    n      = qc.num_qubits
+    bins   = [format(b, f"0{n}b") for b in range(2 ** n)]
+    dtick  = max(1, 2**n // 16)
+
+    cards = []
+    for k in range(num_classes):
+        sample = _xmap_sample_circuit(run_dir, sampler, k)
+        values = [sample.get(s, 0) for s in bins]
+        total  = sum(values) or 1
+        color  = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+
+        fig = go.Figure()
+        fig.add_bar(x=bins, y=[v / total for v in values], marker_color=color)
+        fig.update_layout(
+            title=f"Class {k}  —  input |{bins[k]}>",
+            xaxis_title="Output bins", yaxis_title="Probability",
+            template="plotly_white",
+            yaxis=dict(range=[0, 1]),
+            xaxis=dict(tickmode="linear", tick0=0, dtick=dtick),
+            height=320,
+            margin=dict(l=45, r=15, t=45, b=40),
+            showlegend=False)
+
+        cards.append(html.Div(
+            dcc.Graph(figure=fig, id=f"xmap-sample-c{k}"),
+            style={
+                "width": "48%",
+                "display": "inline-block",
+                "verticalAlign": "top",
+                "marginBottom": "16px",
+                "marginRight": "2%" if k % 2 == 0 else "0",
+            }))
+    return cards
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Run selector helper
 # ══════════════════════════════════════════════════════════════════════════════
