@@ -473,34 +473,56 @@ def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
 
 def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
     """
-    Draw the full conditional circuit for each class (xmap[k] composed with
-    the ansatz) and return them stacked inside a single Div, with a small
-    class label above each image.
+    Render each xmap encoding circuit as a card in a responsive grid.
     """
     import matplotlib.pyplot as plt
     qc   = _load_circuit(run_dir)
     xmap = _load_xmap(run_dir)
     n    = qc.num_qubits
     bins = [format(b, f"0{n}b") for b in range(2 ** n)]
-    rows = []
+
+    cards = []
     for k, enc in enumerate(xmap):
-        fig = circuit_drawer(enc, output="mpl", style={"figwidth": 4})
+        color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
+
+        fig = circuit_drawer(enc, output="mpl", style={"figwidth": 3})
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=90)
         buf.seek(0)
         img = base64.b64encode(buf.read()).decode()
         plt.close("all")
-        rows.append(html.Div([
-            html.Div(f"Class {k}  |{bins[k]}>",
-                     style={"fontWeight": "600", "fontSize": "13px",
-                            "color": "#555", "marginBottom": "6px",
-                            "marginTop": "14px" if k > 0 else "0"}),
-            html.Div(html.Img(src=f"data:image/png;base64,{img}",
-                              style={"maxWidth": "350px", "height": "auto"}),
-                     style=_IMAGE_CONTAINER),
-        ]))
-    return html.Div(rows)
 
+        cards.append(html.Div([
+            # Coloured header bar
+            html.Div([
+                html.Span(f"Class {k}",
+                          style={"fontWeight": "700", "fontSize": "13px",
+                                 "color": "white"}),
+                html.Span(f"  |{bins[k]}>",
+                          style={"fontWeight": "400", "fontSize": "12px",
+                                 "color": "rgba(255,255,255,0.8)",
+                                 "marginLeft": "6px", "fontFamily": "monospace"}),
+            ], style={"background": color, "padding": "6px 10px",
+                      "borderRadius": "6px 6px 0 0"}),
+            # Circuit image
+            html.Div(
+                html.Img(src=f"data:image/png;base64,{img}",
+                         style={"width": "100%", "height": "auto",
+                                "display": "block"}),
+                style={"padding": "8px", "background": "white"}),
+        ], style={
+            "display": "inline-block",
+            "verticalAlign": "top",
+            "width": "calc(50% - 8px)",
+            "marginRight": "8px" if k % 2 == 0 else "0",
+            "marginBottom": "12px",
+            "borderRadius": "6px",
+            "border": "1px solid #e0e0e0",
+            "overflow": "hidden",
+            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        }))
+
+    return html.Div(cards, style={"lineHeight": "0"})
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Run selector helper
