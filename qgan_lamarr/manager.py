@@ -1,7 +1,6 @@
 from pathlib import Path
 import json
 from datetime import datetime
-from qiskit import qasm3
 import pickle
 
 class FileManager:

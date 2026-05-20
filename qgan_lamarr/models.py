@@ -65,7 +65,6 @@ class QGAN():
 
         # Training parameters
         self.discriminator_lr = 1e-3
-        self._discriminator_optimizer = tf.keras.optimizers.Adam(self.discriminator_lr) # 1e-4
         self.generator_losses: List[float] = []
         self.discriminator_losses: List[float] = []
         self.metrics = {#'kullback_leibler' : [], 
@@ -211,6 +210,8 @@ class QGAN():
 
         self.baseline_js = self.compute_baseline_js(n_samples = 50)
 
+        
+
         if manager:
             metadata = {'epochs': epochs, 
                         'shots': self._nshots,
@@ -225,6 +226,7 @@ class QGAN():
             self.FileManager = FileManager(self._generator, self._discriminator, metadata)
 
         optimizer = QGAN_optimizer(name = opt, **opt_args)
+        self._discriminator_optimizer = tf.keras.optimizers.Adam(self.discriminator_lr)
         
         '''
         Training schedule
@@ -523,6 +525,7 @@ class XMapQCGAN(QGAN):
             self.FileManager.save_xmap(self.xmap)
 
         optimizer = QGAN_optimizer(name = opt, **opt_args)
+        self._discriminator_optimizer = tf.keras.optimizers.Adam(self.discriminator_lr)
         
         '''
         Training schedule
