@@ -363,16 +363,10 @@ class XMapQCGAN(QGAN):
     def cond_generator_eval(self, _class: int, weights_gen: np.array) -> dict:
         '''
         Samples the generator circuit for the input weights, returns counts from measurement
-        
         '''
-        qc_ansatz = self._generator.copy()
-        qc_ansatz_inv = self._generator.copy()
         qc_input = self.xmap[_class].copy()
-        
-        qc_gen = qc_ansatz
-        qc_gen = qc_gen.compose(qc_input, range(self._num_qubits))
-        qc_gen = qc_gen.compose(qc_ansatz_inv, range(self._num_qubits))
-        
+        qc_ansatz = self._generator.copy()
+        qc_gen = qc_input.compose(qc_ansatz, range(self._num_qubits))
         qc_gen.measure_all()
         pub = (qc_gen, weights_gen)
         job = self._sampler.run([pub], shots = self._nshots)
