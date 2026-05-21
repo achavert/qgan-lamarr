@@ -658,3 +658,193 @@ class XMapQCGAN(QGAN):
         self.FileManager.update_losses(_step, _gen_loss, _dis_loss)
         self.FileManager.update_metrics(_step, _metrics)        
 
+
+
+class SandwichQCGAN(XMapQCGAN):
+    '''
+    ## Quantum Conditional GAN — Sandwich encoding
+ 
+    Circuit structure per class:
+ 
+        ansatz_A(θ_A)  ──  xmap[class]  ──  ansatz_B(θ_B)  ──  measure
+ 
+    Both parameter vectors θ_A and θ_B are concatenated into a single flat
+    array and trained jointly, exactly as in XMapQCGAN.  Everything else
+    (discriminator, losses, metrics, training loop, file manager) is inherited
+    unchanged.
+ 
+    Parameters
+    ----------
+    generator      : parametrized QuantumCircuit used as the *first* ansatz (A).
+    generator_post : parametrized QuantumCircuit used as the *second* ansatz (B).
+                     Must have the same number of qubits as ``generator``.
+                     Its parameters must be named differently from those of
+                     ``generator`` (use a distinct ParameterVector name, e.g. "φ").
+    All other parameters are identical to XMapQCGAN.
+ 
+    Notes
+    -----
+    ``self._generator`` stores ansatz A; ``self._generator_post`` stores ansatz B.
+    ``self._generator.num_parameters + self._generator_post.num_parameters``
+    determines the total parameter count seen by the optimizer.
+    The weight vector passed to every loss/eval function follows the layout
+    ``[θ_A (len n_A) | θ_B (len n_B)]``.
+    '''
+ 
+    def __init__(self,
+                 num_qubits: int,
+                 generator: QuantumCircuit,
+                 generator_post: QuantumCircuit,
+                 discriminator: tf.keras.Model,
+                 real_dist: Callable[[int, int], dict],
+                 num_classes: int,
+                 class_weights: list | None = None,
+                 xmap: list | None = None,
+                 wass: bool = False,
+                 callback: Callable | None = None,
+                 seed: int = 42) -> None:
+ 
+        if generator_post.num_qubits != num_qubits:
+            raise ValueError(
+                f"generator_post has {generator_post.num_qubits} qubits "
+                f"but num_qubits={num_qubits}.")
+ 
+        # Check parameter names don't collide
+        names_A = {p.name for p in generator.parameters}
+        names_B = {p.name for p in generator_post.parameters}
+        overlap = names_A & names_B
+        if overlap:
+            raise ValueError(
+                f"generator and generator_post share parameter names: {overlap}. "
+                "Use distinct ParameterVector names (e.g. 'θ' and 'φ').")
+ 
+        super().__init__(num_qubits=num_qubits,
+                         generator=generator,
+                         discriminator=discriminator,
+                         real_dist=real_dist,
+                         num_classes=num_classes,
+                         class_weights=class_weights,
+                         xmap=xmap,
+                         wass=wass,
+                         callback=callback,
+                         seed=seed)
+ 
+        self._generator_post = generator_post
+        self._n_params_A = generator.num_parameters
+        self._n_params_B = generator_post.num_parameters
+ 
+    # ── Circuit assembly ──────────────────────────────────────────────────────
+ 
+    def _split_weights(self, weights_gen: np.ndarray):
+        '''Split the flat parameter vector into (θ_A, θ_B).'''
+        return weights_gen[:self._n_params_A], weights_gen[self._n_params_A:]
+ 
+    def cond_generator_eval(self, _class: int, weights_gen: np.ndarray) -> dict:
+        '''
+        Build and sample the sandwich circuit for the given class:
+            ansatz_A(θ_A) | xmap[class] | ansatz_B(θ_B) | measure
+        '''
+        theta_A, theta_B = self._split_weights(weights_gen)
+ 
+        qc_A    = self._generator.copy()
+        qc_xmap = self.xmap[_class].copy()
+        qc_B    = self._generator_post.copy()
+ 
+        qc_gen = qc_A.compose(qc_xmap, range(self._num_qubits))
+        qc_gen = qc_gen.compose(qc_B,   range(self._num_qubits))
+        qc_gen.measure_all()
+ 
+        # Bind both parameter sets; Qiskit accepts a flat list ordered by
+        # circuit.parameters (which is a ParameterView sorted by name).
+        # We build an explicit dict to be unambiguous.
+        param_dict = {**dict(zip(self._generator.parameters,      theta_A)),
+                      **dict(zip(self._generator_post.parameters, theta_B))}
+ 
+        job    = self._sampler.run([(qc_gen, param_dict)], shots=self._nshots)
+        counts = job.result()[0].data.meas.get_counts()
+        return counts
+ 
+    # ── fit: only num_parameters changes vs XMapQCGAN ────────────────────────
+ 
+    def fit(self,
+            epochs: int = 100,
+            step_balance: float = 1.0,
+            shots: int | None = None,
+            initial_weights: np.ndarray | None = None,
+            manager: bool | None = None,
+            opt: str | None = 'ADAM_PSR',
+            **opt_args):
+        '''
+        Train the SandwichQCGAN.
+ 
+        The optimizer sees a single flat parameter vector of length
+        n_params_A + n_params_B.  See XMapQCGAN.fit() for all other details.
+        '''
+        if shots is not None:
+            self._nshots = shots
+ 
+        self._discriminator_optimizer = tf.keras.optimizers.Adam(self.discriminator_lr)
+ 
+        total_params = self._n_params_A + self._n_params_B
+ 
+        if initial_weights is not None:
+            weights_gen = initial_weights
+        else:
+            if self._trained_generator_weights is not None:
+                weights_gen = self._trained_generator_weights
+            else:
+                weights_gen = np.zeros(total_params)
+ 
+        if len(weights_gen) != total_params:
+            raise ValueError(
+                f"initial_weights has length {len(weights_gen)} but "
+                f"n_params_A + n_params_B = {total_params}.")
+ 
+        self.baseline_js = self.cond_compute_baseline_js(n_samples=50)
+ 
+        if manager:
+            metadata = {
+                'epochs': epochs,
+                'shots': self._nshots,
+                'baseline_js': self.baseline_js,
+                'bins': self._dim,
+                'num_classes': self._num_classes,
+                'tranning_balance': step_balance,
+                'discriminator_lr': self.discriminator_lr,
+                'initial_weights': weights_gen,
+                'optimizer': opt,
+                'wasserstein': self.wass,
+                'n_params_A': self._n_params_A,
+                'n_params_B': self._n_params_B,
+                **opt_args,
+            }
+            self.FileManager = FileManager(self._generator, self._discriminator, metadata)
+            self.FileManager.save_xmap(self.xmap)
+ 
+        optimizer = QGAN_optimizer(name=opt, **opt_args)
+ 
+        print("Training started")
+        for stp in tqdm(range(epochs)):
+ 
+            for _ in range(max(1, int(step_balance))):
+                d_loss_val = self.cond_train_discriminator(weights_gen)
+            self.discriminator_losses.append(d_loss_val)
+ 
+            weights_gen, g_loss_val = optimizer.step(self.total_generator_loss, weights_gen)
+            self.generator_losses.append(g_loss_val)
+ 
+            if self._callback:
+                self._callback(weights_gen, g_loss_val)
+ 
+            for c in range(self._num_classes):
+                current_sample   = self.cond_get_sample(c, self._nshots, weights_gen=weights_gen)
+                real_dist_sample = self.cond_real_dist_eval(c)
+                self.cond_compute_metrics(c, current_sample, real_dist_sample, stp)
+            self.total_compute_metrics(stp)
+ 
+            if manager:
+                _metrics = {key: self.metrics[key][stp] for key in self.metrics.keys()}
+                self.manage(stp, weights_gen, g_loss_val, d_loss_val, _metrics)
+ 
+        self._trained_generator_weights = weights_gen
+        print("Training completed")
