@@ -366,7 +366,7 @@ class XMapQCGAN(QGAN):
         
         '''
         qc_ansatz = self._generator.copy()
-        qc_ansatz_inv = self._generator.copy().inverse()
+        qc_ansatz_inv = self._generator.copy()
         qc_input = self.xmap[_class].copy()
         
         qc_gen = qc_ansatz
