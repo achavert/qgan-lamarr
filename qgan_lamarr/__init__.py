@@ -1,3 +1,9 @@
+import os
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")   # hides INFO/WARNING C++ logs
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")  # suppresses the oneDNN notice
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")      # hides absl pre-init warnings
+
+
 from .models        import QGAN, XMapQCGAN, SandwichQCGAN
 from .optimize      import QGAN_optimizer, AdamOptimizerPSR, parameter_shift_rule
 from .metrics       import (jensen_shannon, fidelity, wasserstein,
