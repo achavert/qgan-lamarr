@@ -3,7 +3,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")   # hides INFO/WARNING C++ lo
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")  # suppresses the oneDNN notice
 os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")      # hides absl pre-init warnings
 
-from .models        import QGAN, XMapQCGAN, QCGAN, GeneratorQCGAN
+from .models        import QGAN, XMapQCGAN, QCGAN, CondGenerator1D
 from .optimize      import QGAN_optimizer, AdamOptimizerPSR, parameter_shift_rule
 from .metrics       import (jensen_shannon, fidelity, wasserstein,
                             scoreKS, chi2, kullback_leibler_divergence,
@@ -17,7 +17,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Core model
-    "QGAN", "XMapQCGAN", "QCGAN", "GeneratorQCGAN"
+    "QGAN", "XMapQCGAN", "QCGAN", "CondGenerator1D"
     # Optimizers
     "QGAN_optimizer", "AdamOptimizerPSR", "parameter_shift_rule",
     # Metrics

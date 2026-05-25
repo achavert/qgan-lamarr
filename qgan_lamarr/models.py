@@ -331,7 +331,7 @@ class CondGenerator1D:
             raise ValueError('Ansatz qubit number not matching the circuit')
         self.schedule.update({f'G_{self.ansatz_cnt}' : qc}); self.ansatz_cnt += 1
 
-    def add_input_layer(self, xmap : list | None) -> None:
+    def add_input_layer(self, xmap : list | None = None) -> None:
         if xmap is None:
             _xmap = self.prepare_xmap()
         else :
@@ -340,7 +340,8 @@ class CondGenerator1D:
     
     def prepare_xmap(self):
         xmap = []
-        for xclass in self._bins:
+        bins = [format(b, f'0{int(self.num_qubits)}b') for b in range(2**self.num_qubits)]
+        for xclass in bins:
             xqc = QuantumCircuit(self.num_qubits)
             for xbit in range(self.num_qubits):
                 if xclass[self.num_qubits-1-xbit] == '1':
@@ -388,6 +389,11 @@ class QCGAN(QGAN):
                          callback = callback,
                          seed = seed,)
         
+        self.num_parameters = 0
+        for _key in self._generator.schedule:
+            if 'G_' in _key:
+                self.num_parameters = self.num_parameters + self._generator.schedule[_key].num_parameters
+
         self._num_classes = num_classes
         if class_weights is None:
             self._class_weights = np.ones(num_classes) / num_classes
@@ -405,12 +411,12 @@ class QCGAN(QGAN):
     '''        
     def build_generator(self, _class: int):
         qc_g = QuantumCircuit(self._num_qubits)
-        for _key in self.generator:
+        for _key in self._generator.schedule:
             if 'X_' in _key:
-                q_input = self.generator[_key][_class].copy()
+                q_input = self._generator.schedule[_key][_class].copy()
                 qc_g = qc_g.compose(q_input)
             elif 'G_' in _key:
-                qc_ansatz = self.generator[_key]
+                qc_ansatz = self._generator.schedule[_key]
                 qc_g = qc_g.compose(qc_ansatz)
         qc_g.measure_all()
         return qc_g 
@@ -561,7 +567,7 @@ class QCGAN(QGAN):
             if self._trained_generator_weights is not None:
                 weights_gen = self._trained_generator_weights
             else :
-                weights_gen = np.zeros(self._generator.num_parameters)
+                weights_gen = np.zeros(self.num_parameters)
         self.baseline_js = self.cond_compute_baseline_js(n_samples = 50)
 
         if manager:
@@ -577,7 +583,6 @@ class QCGAN(QGAN):
                         'wasserstein': self.wass,
                         **opt_args}
             self.FileManager = FileManager(self._generator, self._discriminator, metadata)
-            self.FileManager.save_xmap(self.xmap)
 
         optimizer = QGAN_optimizer(name = opt, **opt_args)
         self._discriminator_optimizer = tf.keras.optimizers.Adam(self.discriminator_lr)
