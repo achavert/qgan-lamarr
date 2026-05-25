@@ -859,7 +859,7 @@ def _eval_loss_figure(run_dir: Path) -> str:
     ax.plot(steps, d_loss, label="Discriminator", color="#d6604d")
 
     ref = 0.0 if meta.get("wasserstein") else np.log(2)
-    lbl = "0" if meta.get("wasserstein") else r"$-\ln\!\tfrac{1}{2}$"
+    lbl = "0" if meta.get("wasserstein") else r"$-\ln\!\frac{1}{2}$"
     ax.axhline(ref, ls=":", color="#555", lw=1, label=lbl)
 
     ax.set_xlabel("Epoch")
