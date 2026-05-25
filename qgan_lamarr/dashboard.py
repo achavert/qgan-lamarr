@@ -975,7 +975,7 @@ def _eval_param_figure(run_dir: Path) -> str:
                      cmap=cmap, vmin=0, vmax=2 * np.pi,
                      interpolation="nearest")
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_label(r"$\theta \pmod{2\pi}$")
+    cbar.set_label(r"$\theta \ (mod \ 2\pi)$")
     cbar.set_ticks([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
     cbar.set_ticklabels(["$0$", r"$\pi/2$", r"$\pi$", r"$3\pi/2$", r"$2\pi$"])
 
