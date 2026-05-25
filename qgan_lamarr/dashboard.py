@@ -780,3 +780,348 @@ class QGANDashboard:
 # Backwards-compatible aliases
 TrainingDashboard  = QGANDashboard
 XMapCQGANDashboard = QGANDashboard
+
+
+# ── EvaluationDashboard class ─────────────────────────────────────────────────
+
+
+
+class EvaluationDashboard:
+
+    """
+
+    Static, single-run evaluation dashboard.
+
+
+
+    Shows every panel of QGANDashboard (metadata, circuit, discriminator,
+
+    training curves, parameter heatmap) **plus** evaluation results from
+
+    ``tools.evaluate_model``, all rendered as publication-quality matplotlib
+
+    figures suitable for direct inclusion in LaTeX.
+
+
+
+    There are no live-update intervals — all figures are computed once at
+
+    page load (or on demand via the Evaluate button).
+
+
+
+    Parameters
+
+    ----------
+
+    run_dir : str
+
+        Path to the run directory produced by ``FileManager``
+
+        (e.g. ``"./output/run_20260101_120000"``).
+
+    real_dist : Callable
+
+        The real-distribution sampler used during training.  Signature must
+
+        match the one expected by ``evaluate_model``:
+
+        ``real_dist(shots, bins) -> dict`` for a plain QGAN, or
+
+        ``real_dist(class_idx, shots, bins) -> dict`` for a conditional model.
+
+    n_reps : int
+
+        Number of repetitions used to estimate evaluation uncertainties.
+
+        Defaults to 20.
+
+    """
+
+
+
+    def __init__(self, run_dir: str, real_dist, n_reps: int = 20):
+
+        self.run_dir   = Path(run_dir)
+
+        self.real_dist = real_dist
+
+        self.n_reps    = n_reps
+
+        self.app       = dash.Dash(__name__)
+
+        self._setup_layout()
+
+        self._setup_callbacks()
+
+
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+
+
+
+    def _setup_layout(self):
+
+        meta     = _read_metadata(self.run_dir)
+
+        run_type = _detect_run_type(self.run_dir)
+
+
+
+        # ── Section helper ──
+
+        def _section(title, children, open_=True):
+
+            return html.Details(
+
+                [html.Summary(title,
+
+                              style={"fontWeight": "700", "fontSize": "15px",
+
+                                     "cursor": "pointer", "padding": "6px 0",
+
+                                     "userSelect": "none"}),
+
+                 html.Div(children, style={"paddingTop": "12px"})],
+
+                open=open_,
+
+                style={"marginBottom": "28px",
+
+                       "borderBottom": "1px solid #e0e0e0",
+
+                       "paddingBottom": "8px"})
+
+
+
+        # ── Static panels built at page-load ──
+
+        static_panels = [
+
+            _section("Run metadata", _build_metadata_table(self.run_dir)),
+
+            _section("Generator circuit",
+
+                     _build_circuit_figure(self.run_dir, run_type),
+
+                     open_=False),
+
+            _section("Discriminator model",
+
+                     _build_model_plot(self.run_dir),
+
+                     open_=False),
+
+        ]
+
+        if run_type in ["xmap", "qcgan"]:
+
+            static_panels.append(
+
+                _section("Conditional circuits per class",
+
+                         _build_cond_circuit_panels(self.run_dir, run_type),
+
+                         open_=False))
+
+
+
+        # ── Training curves (matplotlib → base64) ──
+
+        loss_b64    = _eval_loss_figure(self.run_dir)
+
+        metrics_b64 = _eval_metrics_figure(self.run_dir)
+
+        param_b64   = _eval_param_figure(self.run_dir)
+
+
+
+        training_panels = [
+
+            _section("Loss curves",
+
+                     _img_panel(loss_b64,    "Fig. — Training losses")),
+
+            _section("Metric curves",
+
+                     _img_panel(metrics_b64, "Fig. — Training metrics")),
+
+            _section("Parameter evolution",
+
+                     _img_panel(param_b64,   "Fig. — Parameter heatmap (θ mod 2π)")),
+
+        ]
+
+
+
+        # ── Evaluate button + results placeholder ──
+
+        eval_panel = html.Div([
+
+            html.H2("Evaluation", style={"marginBottom": "12px"}),
+
+            html.P(
+
+                f"Shots from metadata: {meta.get('shots', 1024)}   |   "
+
+                f"Repetitions: {self.n_reps}",
+
+                style={"color": "#555", "fontSize": "13px", "marginBottom": "16px"}),
+
+            html.Button(
+
+                "▶  Run evaluation",
+
+                id="eval-btn",
+
+                n_clicks=0,
+
+                style={"padding": "8px 20px", "fontSize": "14px",
+
+                       "cursor": "pointer", "background": "#2166ac",
+
+                       "color": "white", "border": "none",
+
+                       "borderRadius": "5px", "marginBottom": "24px"}),
+
+            html.Div(id="eval-status",
+
+                     style={"color": "#888", "fontSize": "13px",
+
+                            "marginBottom": "16px"}),
+
+            html.Div(id="eval-results"),
+
+        ], style={"marginBottom": "40px"})
+
+
+
+        self.app.layout = html.Div([
+
+            html.H1("QGAN Evaluation Dashboard",
+
+                    style={"marginBottom": "8px", "fontFamily": "Arial"}),
+
+            html.P(str(self.run_dir),
+
+                   style={"color": "#777", "fontSize": "13px",
+
+                          "marginBottom": "28px", "fontFamily": "monospace"}),
+
+
+
+            *static_panels,
+
+            *training_panels,
+
+            eval_panel,
+
+
+
+        ], style={**_PAGE, "maxWidth": "960px"})
+
+
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+
+
+    def _setup_callbacks(self):
+
+        app = self.app
+
+
+
+        @app.callback(
+
+            Output("eval-results", "children"),
+
+            Output("eval-status",  "children"),
+
+            Input("eval-btn",      "n_clicks"),
+
+            prevent_initial_call=True)
+
+        def run_evaluation(n_clicks):
+
+            if not n_clicks:
+
+                return dash.no_update, dash.no_update
+
+
+
+            try:
+
+                results = _run_evaluate_model(
+
+                    self.run_dir, self.real_dist, n_reps=self.n_reps)
+
+                meta    = results["metadata"]
+
+
+
+                hist_b64 = _eval_histogram_figure(results, meta)
+
+
+
+                summary = html.Div([
+
+                    html.H3("Summary metrics",
+
+                            style={"marginBottom": "10px"}),
+
+                    _build_eval_summary_table(results),
+
+
+
+                    html.H3("Distribution comparison",
+
+                            style={"marginBottom": "10px"}),
+
+                    _img_panel(hist_b64,
+
+                               "Fig. — Real (grey) vs Generated (blue) probability "
+
+                               "distributions with ±1σ uncertainties."),
+
+                ])
+
+                status = (f"✓ Evaluation complete — "
+
+                          f"{self.n_reps} reps × {meta.get('shots', '?')} shots.")
+
+                return summary, status
+
+
+
+            except Exception as exc:
+
+                return (html.P(f"Error during evaluation: {exc}",
+
+                               style={"color": "red"}),
+
+                        "✗ Evaluation failed.")
+
+
+
+    # ── Run ───────────────────────────────────────────────────────────────────
+
+
+
+    def run(self, port: int | None = None):
+
+        if port is None:
+
+            with socket.socket() as s:
+
+                s.bind(("", 0))
+
+                port = s.getsockname()[1]
+
+        ip = socket.gethostbyname(socket.gethostname())
+
+        print(f"Run directory:    {self.run_dir}")
+
+        print(f"Dashboard URL:    http://{ip}:{port}")
+
+        self.app.run(host="0.0.0.0", debug=False, port=port)
