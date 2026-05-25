@@ -782,346 +782,550 @@ TrainingDashboard  = QGANDashboard
 XMapCQGANDashboard = QGANDashboard
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  EvaluationDashboard  —  static post-training evaluation view
+#  Designed for publication-quality figures (LaTeX-ready exports).
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Matplotlib / LaTeX style helpers ─────────────────────────────────────────
+
+def _mpl_style() -> dict:
+    """
+    Returns a dict of rcParams that produce clean, serif figures suitable for
+    direct inclusion in LaTeX documents.  Apply with `plt.rcParams.update(...)`.
+    """
+    return {
+        "font.family":        "serif",
+        "font.size":          11,
+        "axes.labelsize":     12,
+        "axes.titlesize":     12,
+        "xtick.labelsize":    10,
+        "ytick.labelsize":    10,
+        "legend.fontsize":    10,
+        "figure.dpi":         150,
+        "savefig.dpi":        300,
+        "savefig.bbox":       "tight",
+        "axes.linewidth":     0.8,
+        "grid.linewidth":     0.5,
+        "lines.linewidth":    1.4,
+        "axes.grid":          True,
+        "grid.alpha":         0.35,
+        "axes.spines.top":    False,
+        "axes.spines.right":  False,
+    }
+
+def _fig_to_b64(fig) -> str:
+    """Serialise a matplotlib figure to a PNG base-64 string and close it."""
+    import matplotlib.pyplot as plt
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=300)
+    buf.seek(0)
+    data = base64.b64encode(buf.read()).decode()
+    plt.close(fig)
+    return data
+
+def _img_panel(b64: str, caption: str = "") -> html.Div:
+    """Wrap a base-64 PNG in a centred panel with an optional caption."""
+    children = [html.Img(src=f"data:image/png;base64,{b64}",
+                         style={"maxWidth": "820px", "width": "100%",
+                                "height": "auto", "display": "block",
+                                "margin": "0 auto"})]
+    if caption:
+        children.append(html.P(caption, style={"textAlign": "center",
+                                               "color": "#555", "fontSize": "12px",
+                                               "marginTop": "6px"}))
+    return html.Div(children, style={"marginBottom": "32px"})
+
+
+# ── Static matplotlib figure builders ────────────────────────────────────────
+
+def _eval_loss_figure(run_dir: Path) -> str:
+    """
+    Training loss curves — publication style.
+    Returns a base-64 PNG string.
+    """
+    import matplotlib.pyplot as plt
+
+    losses = _read_losses(run_dir)
+    meta   = _read_metadata(run_dir)
+    steps  = [l["step"] for l in losses]
+    g_loss = [l["generator_loss"]     for l in losses]
+    d_loss = [l["discriminator_loss"] for l in losses]
+
+    plt.rcParams.update(_mpl_style())
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+
+    ax.plot(steps, g_loss, label="Generator",     color="#2166ac")
+    ax.plot(steps, d_loss, label="Discriminator", color="#d6604d")
+
+    ref = 0.0 if meta.get("wasserstein") else np.log(2)
+    lbl = "0" if meta.get("wasserstein") else r"$-\ln\!\tfrac{1}{2}$"
+    ax.axhline(ref, ls=":", color="#555", lw=1, label=lbl)
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training losses")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _eval_metrics_figure(run_dir: Path) -> str:
+    """
+    Training metric curves — publication style.
+    Handles both QGAN (single JS/Fidelity columns) and conditional variants
+    (per-class columns plus aggregates).
+    Returns a base-64 PNG string.
+    """
+    import matplotlib.pyplot as plt
+
+    met  = _read_metrics(run_dir)
+    meta = _read_metadata(run_dir)
+    if not met:
+        return ""
+
+    steps       = [m["step"] for m in met]
+    is_cond     = "jensen_shannon_c0" in met[0]
+    num_classes = int(meta.get("num_classes", 1)) if is_cond else 0
+
+    plt.rcParams.update(_mpl_style())
+
+    if is_cond:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3.8), sharey=False)
+        cmap = plt.get_cmap("tab10")
+
+        for k in range(num_classes):
+            c = cmap(k / max(num_classes, 1))
+            js_key  = f"jensen_shannon_c{k}"
+            fid_key = f"fidelity_c{k}"
+            if js_key in met[0]:
+                ax1.plot(steps, [m[js_key]  for m in met], ls="--", alpha=0.5,
+                         color=c, label=f"c{k}")
+            if fid_key in met[0]:
+                ax2.plot(steps, [m[fid_key] for m in met], ls="--", alpha=0.5,
+                         color=c, label=f"c{k}")
+
+        for key, ax, lbl in [
+            ("jensen_shannon",     ax1, "JS aggregate"),
+            ("jensen_shannon_avg", ax1, "JS avg"),
+            ("fidelity",           ax2, "Fid. aggregate"),
+            ("fidelity_avg",       ax2, "Fid. avg"),
+        ]:
+            if key in met[0]:
+                ls = "-" if "avg" not in key else (0, (5, 2))
+                ax.plot(steps, [m[key] for m in met], color="black",
+                        lw=1.8, ls=ls, label=lbl)
+
+        baseline = meta.get("baseline_js")
+        if baseline:
+            mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
+            for ax in (ax1, ax2):
+                ax.axhline(mean_js, ls=":", color="#888", lw=1, label="baseline JS")
+                if std_js:
+                    ax.axhspan(max(0, mean_js - std_js), mean_js + std_js,
+                               alpha=0.08, color="#888")
+
+        ax1.set_xlabel("Epoch"); ax1.set_ylabel("Jensen–Shannon divergence")
+        ax2.set_xlabel("Epoch"); ax2.set_ylabel("Fidelity")
+        ax1.set_title("JS divergence"); ax2.set_title("Fidelity")
+        ax1.set_ylim(0, 1);    ax2.set_ylim(0, 1)
+        ax1.legend(frameon=False, fontsize=8, ncol=2)
+        ax2.legend(frameon=False, fontsize=8, ncol=2)
+    else:
+        fig, ax = plt.subplots(figsize=(5.5, 3.5))
+        for key in met[0]:
+            if key != "step":
+                ax.plot(steps, [m[key] for m in met], label=key)
+        baseline = meta.get("baseline_js")
+        if baseline:
+            mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
+            ax.axhline(mean_js, ls=":", color="#888", lw=1, label="baseline JS")
+            if std_js:
+                ax.axhspan(max(0, mean_js - std_js), mean_js + std_js,
+                           alpha=0.08, color="#888")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Metric value")
+        ax.set_title("Training metrics")
+        ax.set_ylim(0, 1)
+        ax.legend(frameon=False)
+
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _eval_param_figure(run_dir: Path) -> str:
+    """
+    Parameter evolution heatmap — publication style.
+    Returns a base-64 PNG string.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    params = _read_parameters(run_dir)
+    if not params:
+        return ""
+
+    z = np.mod(np.array(params).T, 2 * np.pi)   # shape (n_params, n_steps)
+
+    plt.rcParams.update(_mpl_style())
+    fig, ax = plt.subplots(figsize=(6.5, max(2.5, z.shape[0] * 0.18 + 1.0)))
+
+    cmap = plt.get_cmap("hsv")
+    im   = ax.imshow(z, aspect="auto", origin="upper",
+                     cmap=cmap, vmin=0, vmax=2 * np.pi,
+                     interpolation="nearest")
+    cbar = fig.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label(r"$\theta \pmod{2\pi}$")
+    cbar.set_ticks([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
+    cbar.set_ticklabels(["$0$", r"$\pi/2$", r"$\pi$", r"$3\pi/2$", r"$2\pi$"])
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Parameter index")
+    ax.set_title("Parameter evolution")
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _eval_histogram_figure(results: dict, meta: dict) -> str:
+    """
+    Static Real vs Generated histogram with uncertainty bands, one subplot
+    per class.  Designed for direct LaTeX inclusion.
+    Returns a base-64 PNG string.
+    """
+    import matplotlib.pyplot as plt
+
+    is_cond     = meta.get("num_classes") is not None
+    num_classes = int(meta.get("num_classes", 1))
+    num_qubits  = int(np.log2(meta["bins"]))
+    bins_str    = [format(b, f"0{num_qubits}b") for b in range(meta["bins"])]
+    x           = np.arange(meta["bins"])
+    width       = 0.38
+
+    plt.rcParams.update(_mpl_style())
+    fig, axes = plt.subplots(1, num_classes,
+                             figsize=(5.0 * num_classes, 3.8),
+                             squeeze=False)
+    axes = axes.flatten()
+
+    for c in range(num_classes):
+        ax = axes[c]
+
+        # Retrieve per-class mean/std vectors stored by evaluate_model
+        rv = np.array(results["_real_vectors"][c])    # (n_reps, n_bins)
+        mv = np.array(results["_model_vectors"][c])
+
+        r_mean, r_std = rv.mean(axis=0), rv.std(axis=0)
+        m_mean, m_std = mv.mean(axis=0), mv.std(axis=0)
+
+        ax.bar(x - width / 2, r_mean, width, color="#888888", alpha=0.75,
+               label="Real",      zorder=2)
+        ax.errorbar(x - width / 2, r_mean, yerr=r_std, fmt="none",
+                    ecolor="#444", elinewidth=0.9, capsize=2, zorder=3)
+
+        ax.bar(x + width / 2, m_mean, width, color="#2166ac", alpha=0.80,
+               label="Generated", zorder=2)
+        ax.errorbar(x + width / 2, m_mean, yerr=m_std, fmt="none",
+                    ecolor="#08306b", elinewidth=0.9, capsize=2, zorder=3)
+
+        title = (f"Class {c}" if is_cond and num_classes > 1
+                 else "Generated vs Real")
+        ax.set_title(title)
+        ax.set_xlabel("Bin")
+        ax.set_ylabel("Probability")
+        ax.set_xticks(x)
+        ax.set_xticklabels(bins_str, rotation=90 if num_qubits > 3 else 45,
+                           fontsize=max(6, 10 - num_qubits))
+        ax.set_ylim(bottom=0)
+        ax.legend(frameon=False)
+
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
+    """
+    Thin wrapper around tools.evaluate_model that also retains the per-class
+    raw probability vectors needed for the histogram figure.
+    """
+    from .tools import dict2vector
+    from .metrics import jensen_shannon, fidelity
+
+    meta = _read_metadata(run_dir)
+    shots      = int(meta.get("shots", 1024))
+    is_cond    = "num_classes" in meta
+    num_classes = int(meta.get("num_classes", 1)) if is_cond else 1
+    num_qubits = int(np.log2(meta["bins"]))
+    bins_str   = [format(b, f"0{num_qubits}b") for b in range(meta["bins"])]
+
+    run_type = _detect_run_type(run_dir)
+
+    params = _read_parameters(run_dir)
+    if not params:
+        raise RuntimeError("No parameter history found — cannot evaluate model.")
+    final_weights = params[-1]
+
+    circuit_obj = _load_circuit(run_dir)
+    xmap        = _load_xmap(run_dir) if run_type == "xmap" else None
+    sampler     = StatevectorSampler()
+
+    def sample_model(c=0):
+        if run_type == "qgan":
+            qc = circuit_obj.copy()
+        elif run_type == "xmap":
+            qc = xmap[c].compose(circuit_obj, range(num_qubits))
+        elif run_type == "qcgan":
+            qc = QuantumCircuit(num_qubits)
+            for key in circuit_obj.schedule:
+                if "X_" in key:
+                    qc = qc.compose(circuit_obj.schedule[key][c])
+                elif "G_" in key:
+                    qc = qc.compose(circuit_obj.schedule[key])
+        qc.measure_all()
+        param_dict = dict(zip(qc.parameters, final_weights))
+        job = sampler.run([(qc, param_dict)], shots=shots)
+        return job.result()[0].data.meas.get_counts()
+
+    def sample_real(c=0):
+        if is_cond:
+            return real_dist(c, shots, meta["bins"])
+        else:
+            return real_dist(shots, meta["bins"])
+
+    baseline_js_list,  baseline_fid_list  = [], []
+    model_js_list,     model_fid_list     = [], []
+    real_vectors  = {c: [] for c in range(num_classes)}
+    model_vectors = {c: [] for c in range(num_classes)}
+
+    for _ in range(n_reps):
+        rep_b_js = rep_b_fid = rep_m_js = rep_m_fid = 0.0
+        for c in range(num_classes):
+            real_1  = sample_real(c)
+            real_2  = sample_real(c)
+            model_1 = sample_model(c)
+
+            real_vectors[c].append(dict2vector(real_1, bins_str))
+            model_vectors[c].append(dict2vector(model_1, bins_str))
+
+            w = 1.0 / num_classes
+            rep_b_js  += jensen_shannon(real_1, real_2,  bins_str) * w
+            rep_b_fid += fidelity(real_1,       real_2,  bins_str) * w
+            rep_m_js  += jensen_shannon(real_1, model_1, bins_str) * w
+            rep_m_fid += fidelity(real_1,       model_1, bins_str) * w
+
+        baseline_js_list.append(rep_b_js);   baseline_fid_list.append(rep_b_fid)
+        model_js_list.append(rep_m_js);      model_fid_list.append(rep_m_fid)
+
+    return {
+        "metadata": meta,
+        "baseline": {
+            "jensen_shannon": {"mean": float(np.mean(baseline_js_list)),
+                               "std":  float(np.std(baseline_js_list))},
+            "fidelity":       {"mean": float(np.mean(baseline_fid_list)),
+                               "std":  float(np.std(baseline_fid_list))},
+        },
+        "model": {
+            "jensen_shannon": {"mean": float(np.mean(model_js_list)),
+                               "std":  float(np.std(model_js_list))},
+            "fidelity":       {"mean": float(np.mean(model_fid_list)),
+                               "std":  float(np.std(model_fid_list))},
+        },
+        # Raw per-class vectors kept for the histogram figure
+        "_real_vectors":  {c: real_vectors[c]  for c in real_vectors},
+        "_model_vectors": {c: model_vectors[c] for c in model_vectors},
+    }
+
+
+def _build_eval_summary_table(results: dict) -> html.Table:
+    """Render a compact HTML table summarising the evaluation metrics."""
+    def _fmt(d): return f"{d['mean']:.4f} ± {d['std']:.4f}"
+    rows = [
+        html.Tr([html.Th("Metric", style={"padding": "6px 12px", "textAlign": "left"}),
+                 html.Th("Baseline (real vs real)", style={"padding": "6px 12px"}),
+                 html.Th("Model (real vs gen.)",    style={"padding": "6px 12px"})],
+                style={"background": "#f0f0f0"}),
+        html.Tr([html.Td("Jensen–Shannon", style={"padding": "6px 12px", "fontWeight": "600"}),
+                 html.Td(_fmt(results["baseline"]["jensen_shannon"]), style={"padding": "6px 12px", "textAlign": "center"}),
+                 html.Td(_fmt(results["model"]["jensen_shannon"]),    style={"padding": "6px 12px", "textAlign": "center"})]),
+        html.Tr([html.Td("Fidelity",       style={"padding": "6px 12px", "fontWeight": "600"}),
+                 html.Td(_fmt(results["baseline"]["fidelity"]),       style={"padding": "6px 12px", "textAlign": "center"}),
+                 html.Td(_fmt(results["model"]["fidelity"]),          style={"padding": "6px 12px", "textAlign": "center"})],
+                style={"background": "#fafafa"}),
+    ]
+    return html.Table(rows, style={
+        "borderCollapse": "collapse", "width": "100%",
+        "border": "1px solid #ccc", "marginBottom": "28px",
+        "fontSize": "13px", "fontFamily": "Arial"})
+
+
 # ── EvaluationDashboard class ─────────────────────────────────────────────────
 
-
-
 class EvaluationDashboard:
-
     """
-
     Static, single-run evaluation dashboard.
 
-
-
     Shows every panel of QGANDashboard (metadata, circuit, discriminator,
-
     training curves, parameter heatmap) **plus** evaluation results from
-
     ``tools.evaluate_model``, all rendered as publication-quality matplotlib
-
     figures suitable for direct inclusion in LaTeX.
 
-
-
     There are no live-update intervals — all figures are computed once at
-
     page load (or on demand via the Evaluate button).
 
-
-
     Parameters
-
     ----------
-
     run_dir : str
-
         Path to the run directory produced by ``FileManager``
-
         (e.g. ``"./output/run_20260101_120000"``).
-
     real_dist : Callable
-
         The real-distribution sampler used during training.  Signature must
-
         match the one expected by ``evaluate_model``:
-
         ``real_dist(shots, bins) -> dict`` for a plain QGAN, or
-
         ``real_dist(class_idx, shots, bins) -> dict`` for a conditional model.
-
     n_reps : int
-
         Number of repetitions used to estimate evaluation uncertainties.
-
         Defaults to 20.
-
     """
 
-
-
     def __init__(self, run_dir: str, real_dist, n_reps: int = 20):
-
         self.run_dir   = Path(run_dir)
-
         self.real_dist = real_dist
-
         self.n_reps    = n_reps
-
         self.app       = dash.Dash(__name__)
-
         self._setup_layout()
-
         self._setup_callbacks()
-
-
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
-
-
     def _setup_layout(self):
-
         meta     = _read_metadata(self.run_dir)
-
         run_type = _detect_run_type(self.run_dir)
 
-
-
         # ── Section helper ──
-
         def _section(title, children, open_=True):
-
             return html.Details(
-
                 [html.Summary(title,
-
                               style={"fontWeight": "700", "fontSize": "15px",
-
                                      "cursor": "pointer", "padding": "6px 0",
-
                                      "userSelect": "none"}),
-
                  html.Div(children, style={"paddingTop": "12px"})],
-
                 open=open_,
-
                 style={"marginBottom": "28px",
-
                        "borderBottom": "1px solid #e0e0e0",
-
                        "paddingBottom": "8px"})
 
-
-
         # ── Static panels built at page-load ──
-
         static_panels = [
-
             _section("Run metadata", _build_metadata_table(self.run_dir)),
-
             _section("Generator circuit",
-
                      _build_circuit_figure(self.run_dir, run_type),
-
                      open_=False),
-
             _section("Discriminator model",
-
                      _build_model_plot(self.run_dir),
-
                      open_=False),
-
         ]
-
         if run_type in ["xmap", "qcgan"]:
-
             static_panels.append(
-
                 _section("Conditional circuits per class",
-
                          _build_cond_circuit_panels(self.run_dir, run_type),
-
                          open_=False))
 
-
-
         # ── Training curves (matplotlib → base64) ──
-
         loss_b64    = _eval_loss_figure(self.run_dir)
-
         metrics_b64 = _eval_metrics_figure(self.run_dir)
-
         param_b64   = _eval_param_figure(self.run_dir)
 
-
-
         training_panels = [
-
             _section("Loss curves",
-
                      _img_panel(loss_b64,    "Fig. — Training losses")),
-
             _section("Metric curves",
-
                      _img_panel(metrics_b64, "Fig. — Training metrics")),
-
             _section("Parameter evolution",
-
                      _img_panel(param_b64,   "Fig. — Parameter heatmap (θ mod 2π)")),
-
         ]
 
-
-
         # ── Evaluate button + results placeholder ──
-
         eval_panel = html.Div([
-
             html.H2("Evaluation", style={"marginBottom": "12px"}),
-
             html.P(
-
                 f"Shots from metadata: {meta.get('shots', 1024)}   |   "
-
                 f"Repetitions: {self.n_reps}",
-
                 style={"color": "#555", "fontSize": "13px", "marginBottom": "16px"}),
-
             html.Button(
-
                 "▶  Run evaluation",
-
                 id="eval-btn",
-
                 n_clicks=0,
-
                 style={"padding": "8px 20px", "fontSize": "14px",
-
                        "cursor": "pointer", "background": "#2166ac",
-
                        "color": "white", "border": "none",
-
                        "borderRadius": "5px", "marginBottom": "24px"}),
-
             html.Div(id="eval-status",
-
                      style={"color": "#888", "fontSize": "13px",
-
                             "marginBottom": "16px"}),
-
             html.Div(id="eval-results"),
-
         ], style={"marginBottom": "40px"})
 
-
-
         self.app.layout = html.Div([
-
             html.H1("QGAN Evaluation Dashboard",
-
                     style={"marginBottom": "8px", "fontFamily": "Arial"}),
-
             html.P(str(self.run_dir),
-
                    style={"color": "#777", "fontSize": "13px",
-
                           "marginBottom": "28px", "fontFamily": "monospace"}),
 
-
-
             *static_panels,
-
             *training_panels,
-
             eval_panel,
-
-
 
         ], style={**_PAGE, "maxWidth": "960px"})
 
-
-
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
-
-
     def _setup_callbacks(self):
-
         app = self.app
 
-
-
         @app.callback(
-
             Output("eval-results", "children"),
-
             Output("eval-status",  "children"),
-
             Input("eval-btn",      "n_clicks"),
-
             prevent_initial_call=True)
-
         def run_evaluation(n_clicks):
-
             if not n_clicks:
-
                 return dash.no_update, dash.no_update
 
-
-
             try:
-
                 results = _run_evaluate_model(
-
                     self.run_dir, self.real_dist, n_reps=self.n_reps)
-
                 meta    = results["metadata"]
-
-
 
                 hist_b64 = _eval_histogram_figure(results, meta)
 
-
-
                 summary = html.Div([
-
                     html.H3("Summary metrics",
-
                             style={"marginBottom": "10px"}),
-
                     _build_eval_summary_table(results),
 
-
-
                     html.H3("Distribution comparison",
-
                             style={"marginBottom": "10px"}),
-
                     _img_panel(hist_b64,
-
                                "Fig. — Real (grey) vs Generated (blue) probability "
-
                                "distributions with ±1σ uncertainties."),
-
                 ])
-
                 status = (f"✓ Evaluation complete — "
-
                           f"{self.n_reps} reps × {meta.get('shots', '?')} shots.")
-
                 return summary, status
 
-
-
             except Exception as exc:
-
                 return (html.P(f"Error during evaluation: {exc}",
-
                                style={"color": "red"}),
-
                         "✗ Evaluation failed.")
-
-
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
-
-
     def run(self, port: int | None = None):
-
         if port is None:
-
             with socket.socket() as s:
-
                 s.bind(("", 0))
-
                 port = s.getsockname()[1]
-
         ip = socket.gethostbyname(socket.gethostname())
-
         print(f"Run directory:    {self.run_dir}")
-
         print(f"Dashboard URL:    http://{ip}:{port}")
-
         self.app.run(host="0.0.0.0", debug=False, port=port)
