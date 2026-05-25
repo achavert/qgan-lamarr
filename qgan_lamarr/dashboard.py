@@ -22,8 +22,6 @@ from qiskit.primitives import StatevectorSampler
 from qiskit.visualization import circuit_drawer
 import tensorflow as tf
 
-
-
 _CLASS_COLORS = [
     "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
     "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
@@ -49,10 +47,6 @@ _SIDEBAR_HEADER  = {"fontSize": "12px", "fontWeight": "700", "color": "#666",
                     "textTransform": "uppercase", "letterSpacing": "0.05em",
                     "marginBottom": "8px", "paddingBottom": "6px",
                     "borderBottom": "1px solid #e0e0e0"}
-_SELECTOR        = {"width": "400px", "marginBottom": "30px",
-                    "fontFamily": "Arial", "fontSize": "14px"}
-_SELECTOR_ROW    = {"display": "flex", "alignItems": "center",
-                    "gap": "16px", "marginBottom": "30px"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -95,6 +89,10 @@ def _load_circuit(run_dir: Path):
     with open(run_dir / "generator_circuit.qasm", "rb") as f:
         return pickle.load(f)
 
+def _load_xmap(run_dir: Path) -> list:
+    with open(run_dir / "xmap.pkl", "rb") as f:
+        return pickle.load(f)
+
 def _sample_circuit(run_dir: Path, sampler: StatevectorSampler,
                     shots: int = 2**10) -> dict:
     params = _read_parameters(run_dir)
@@ -102,23 +100,6 @@ def _sample_circuit(run_dir: Path, sampler: StatevectorSampler,
         return {}
     qc = _load_circuit(run_dir)
     qc_run = qc.copy()
-    qc_run.measure_all()
-    param_dict = dict(zip(qc.parameters, params[-1]))
-    job = sampler.run([(qc_run, param_dict)], shots=shots)
-    return job.result()[0].data.meas.get_counts()
-
-def _sample_circuit_conditional(run_dir: Path, sampler: StatevectorSampler,
-                                label: int, num_classes: int,
-                                shots: int = 2**10) -> dict:
-    params = _read_parameters(run_dir)
-    if not params:
-        return {}
-    qc = _load_circuit(run_dir)
-    num_qubits = qc.num_qubits
-    encoding = QuantumCircuit(num_qubits)
-    for qubit in label2bits(label, num_qubits):
-        encoding.x(qubit)
-    qc_run = encoding.compose(qc)
     qc_run.measure_all()
     param_dict = dict(zip(qc.parameters, params[-1]))
     job = sampler.run([(qc_run, param_dict)], shots=shots)
@@ -144,8 +125,20 @@ def _build_metadata_table(run_dir: Path):
     return html.Table(rows, style={"borderCollapse": "collapse", "width": "100%",
                                    "marginBottom": "20px", "border": "1px solid #ccc"})
 
-def _build_circuit_figure(run_dir: Path):
-    qc  = _load_circuit(run_dir)
+def _build_circuit_figure(run_dir: Path, run_type: str = 'qgan'):
+    obj = _load_circuit(run_dir)
+    
+    if run_type == 'qcgan':
+        # obj is CondGenerator1D: Reconstruct example circuit for class 0
+        qc = QuantumCircuit(obj.num_qubits)
+        for key in obj.schedule:
+            if 'X_' in key:
+                qc = qc.compose(obj.schedule[key][0])
+            elif 'G_' in key:
+                qc = qc.compose(obj.schedule[key])
+    else:
+        qc = obj
+
     fig = circuit_drawer(qc, output="mpl")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
@@ -251,113 +244,45 @@ def _build_sample_plot(run_dir: Path, sampler: StatevectorSampler):
         xaxis=dict(tickmode="linear", tick0=0, dtick=max(1, 2**n // 16)))
     return _standardize(fig)
 
-def _build_conditional_metrics_figure(run_dir: Path, num_classes: int):
-    met = _read_metrics(run_dir)
-    if not met:
-        return go.Figure()
-    meta  = _read_metadata(run_dir)
-    steps = [m["step"] for m in met]
-    fig   = go.Figure()
-    for k in range(num_classes):
-        color   = _CLASS_COLORS[k % len(_CLASS_COLORS)]
-        js_key  = f"js_class_{k}"
-        fid_key = f"fidelity_class_{k}"
-        if js_key in met[0]:
-            fig.add_trace(go.Scatter(x=steps, y=[m[js_key] for m in met],
-                                     mode="lines", name=f"JS class {k}",
-                                     line=dict(color=color, dash="dot"), opacity=0.6))
-        if fid_key in met[0]:
-            fig.add_trace(go.Scatter(x=steps, y=[m[fid_key] for m in met],
-                                     mode="lines", name=f"Fidelity class {k}",
-                                     line=dict(color=color), opacity=0.55,
-                                     yaxis="y2"))
-    for key, label, style in [
-        ("js_aggregate",     "JS aggregate",          dict(color="black", width=2)),
-        ("js_aggregate_avg", "JS aggregate (avg)",    dict(color="black", width=2, dash="dash")),
-    ]:
-        if key in met[0]:
-            fig.add_trace(go.Scatter(x=steps, y=[m[key] for m in met],
-                                     mode="lines", name=label, line=style))
-    if "fidelity_aggregate" in met[0]:
-        fig.add_trace(go.Scatter(x=steps, y=[m["fidelity_aggregate"] for m in met],
-                                 mode="lines", name="Fidelity aggregate",
-                                 line=dict(color="darkblue", width=2), yaxis="y2"))
-    baseline = meta.get("baseline_js")
-    if baseline:
-        mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
-        fig.add_hline(y=mean_js, line_dash="dot", line_color="gray",
-                      annotation_text="baseline JS", annotation_position="top left")
-        fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="lightgray")
-        fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="lightgray")
-    fig.update_layout(
-        title="Conditional metrics",
-        yaxis=dict(title="Jensen-Shannon divergence"),
-        yaxis2=dict(title="Fidelity", overlaying="y", side="right", range=[0, 1]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        template="plotly_white", height=500,
-        margin=dict(l=60, r=60, t=60, b=50))
-    return fig
-
-def _build_class_sample_plots(run_dir: Path, sampler: StatevectorSampler,
-                               num_classes: int):
-    qc     = _load_circuit(run_dir)
-    n      = qc.num_qubits
-    states = [format(b, f'0{n}b') for b in range(2 ** n)]
-    graphs = []
-    for k in range(num_classes):
-        sample = _sample_circuit_conditional(run_dir, sampler, k, num_classes)
-        values = [sample.get(s, 0) for s in states]
-        total  = sum(values) or 1
-        color  = _CLASS_COLORS[k % len(_CLASS_COLORS)]
-        fig = go.Figure()
-        fig.add_bar(x=states, y=[v / total for v in values], marker_color=color)
-        fig.update_layout(
-            title=f"Generated sample — class {k}",
-            xaxis_title="Bins", yaxis_title="Probability",
-            template="plotly_white", yaxis=dict(range=[0, 1]),
-            xaxis=dict(tickmode="linear", tick0=0, dtick=max(1, 2**n // 16)),
-            height=380, margin=dict(l=50, r=20, t=50, b=40))
-        graphs.append(dcc.Graph(id=f"sample-class-{k}", figure=fig,
-                                style={"width": "100%", "marginBottom": "20px"}))
-    return graphs
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  XMapQCGAN figure builders  (stateless)
+#  Conditional figure builders (Handles both XMapQCGAN and QCGAN)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _load_xmap(run_dir: Path) -> list:
-    """Load the pickled xmap list of QuantumCircuits saved by FileManager.save_xmap."""
-    with open(run_dir / "xmap.pkl", "rb") as f:
-        return pickle.load(f)
-
-
-def _xmap_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
-                         label: int, shots: int = 2**10) -> dict:
+def _cond_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
+                         label: int, run_type: str, shots: int = 2**10) -> dict:
     """
-    Reproduce XMapQCGAN.cond_generator_eval exactly:
-    load the saved xmap circuit for this label, compose with the ansatz,
-    bind the latest parameters and sample.
-    Works for both the default xmap and any custom xmap passed by the user.
+    Uniform sampler wrapper for old XMapQCGAN and new QCGAN.
     """
     params = _read_parameters(run_dir)
     if not params:
         return {}
-    qc     = _load_circuit(run_dir)
-    xmap   = _load_xmap(run_dir)
-    qc_run = xmap[label].compose(qc, range(qc.num_qubits))
+    
+    obj = _load_circuit(run_dir)
+    
+    if run_type == 'xmap':
+        qc = obj
+        xmap = _load_xmap(run_dir)
+        qc_run = xmap[label].compose(qc, range(qc.num_qubits))
+    elif run_type == 'qcgan':
+        qc_run = QuantumCircuit(obj.num_qubits)
+        for key in obj.schedule:
+            if 'X_' in key:
+                qc_run = qc_run.compose(obj.schedule[key][label])
+            elif 'G_' in key:
+                qc_run = qc_run.compose(obj.schedule[key])
+    else:
+        return {}
+
     qc_run.measure_all()
-    param_dict = dict(zip(qc.parameters, params[-1]))
+    param_dict = dict(zip(qc_run.parameters, params[-1]))
     job = sampler.run([(qc_run, param_dict)], shots=shots)
     return job.result()[0].data.meas.get_counts()
 
 
-def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
+def _build_cond_metrics_figure(run_dir: Path, num_classes: int, run_type: str):
     """
-    Metrics figure for XMapQCGAN.
-    Per-class keys  : jensen_shannon_c{k}, fidelity_c{k}
-    Aggregate keys  : jensen_shannon, jensen_shannon_avg, fidelity, fidelity_avg
+    Metrics figure for Conditional GANs.
     """
     met = _read_metrics(run_dir)
     if not met:
@@ -366,7 +291,6 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
     steps = [m["step"] for m in met]
     fig   = go.Figure()
 
-    # Per-class JS — left axis, dotted
     for k in range(num_classes):
         key   = f"jensen_shannon_c{k}"
         color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
@@ -376,7 +300,6 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
                 mode="lines", name=f"JS c{k}",
                 line=dict(color=color, dash="dot"), opacity=0.55))
 
-    # Per-class fidelity — right axis, solid
     for k in range(num_classes):
         key   = f"fidelity_c{k}"
         color = _CLASS_COLORS[k % len(_CLASS_COLORS)]
@@ -387,7 +310,6 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
                 line=dict(color=color), opacity=0.45,
                 yaxis="y2"))
 
-    # Aggregate JS — left axis, bold
     for key, label, style in [
         ("jensen_shannon",     "JS aggregate",       dict(color="black", width=2)),
         ("jensen_shannon_avg", "JS aggregate (avg)", dict(color="black", width=2, dash="dash")),
@@ -397,7 +319,6 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
                 x=steps, y=[m[key] for m in met],
                 mode="lines", name=label, line=style))
 
-    # Aggregate fidelity — right axis, bold
     for key, label, style in [
         ("fidelity",     "Fidelity aggregate",       dict(color="darkblue", width=2)),
         ("fidelity_avg", "Fidelity aggregate (avg)", dict(color="darkblue", width=2, dash="dash")),
@@ -408,7 +329,6 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
                 mode="lines", name=label, line=style,
                 yaxis="y2"))
 
-    # Baseline JS band
     baseline = meta.get("baseline_js")
     if baseline:
         mean_js, std_js = baseline if isinstance(baseline, (list, tuple)) else (baseline, 0)
@@ -417,8 +337,9 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
         fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="lightgray")
         fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="lightgray")
 
+    title = "Conditional metrics — QCGAN" if run_type == 'qcgan' else "Conditional metrics — XMapQCGAN"
     fig.update_layout(
-        title="Conditional metrics — XMapQCGAN",
+        title=title,
         xaxis_title="Epoch",
         yaxis=dict(title="Jensen-Shannon divergence", range=[0, 1]),
         yaxis2=dict(title="Fidelity", overlaying="y", side="right", range=[0, 1]),
@@ -428,20 +349,19 @@ def _build_xmap_metrics_figure(run_dir: Path, num_classes: int):
     return fig
 
 
-def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
-                               num_classes: int) -> list:
+def _build_cond_class_samples(run_dir: Path, sampler: StatevectorSampler,
+                               num_classes: int, run_type: str) -> list:
     """
     2-column grid of bar charts, one per class.
-    Each chart title shows the input basis state |bitstring>.
     """
-    qc     = _load_circuit(run_dir)
-    n      = qc.num_qubits
-    bins   = [format(b, f"0{n}b") for b in range(2 ** n)]
-    dtick  = max(1, 2**n // 16)
+    obj = _load_circuit(run_dir)
+    n = obj.num_qubits
+    bins  = [format(b, f"0{n}b") for b in range(2 ** n)]
+    dtick = max(1, 2**n // 16)
 
     cards = []
     for k in range(num_classes):
-        sample = _xmap_sample_circuit(run_dir, sampler, k)
+        sample = _cond_sample_circuit(run_dir, sampler, k, run_type)
         values = [sample.get(s, 0) for s in bins]
         total  = sum(values) or 1
         color  = _CLASS_COLORS[k % len(_CLASS_COLORS)]
@@ -459,7 +379,7 @@ def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
             showlegend=False)
 
         cards.append(html.Div(
-            dcc.Graph(figure=fig, id=f"xmap-sample-c{k}"),
+            dcc.Graph(figure=fig, id=f"cond-sample-c{k}"),
             style={
                 "width": "48%",
                 "display": "inline-block",
@@ -470,15 +390,28 @@ def _build_xmap_class_samples(run_dir: Path, sampler: StatevectorSampler,
     return cards
 
 
-
-def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
+def _build_cond_circuit_panels(run_dir: Path, run_type: str) -> html.Div:
     """
-    Render each xmap encoding circuit as a card in a responsive grid.
+    Render conditional encoding circuits.
     """
     import matplotlib.pyplot as plt
-    qc   = _load_circuit(run_dir)
-    xmap = _load_xmap(run_dir)
-    n    = qc.num_qubits
+    obj = _load_circuit(run_dir)
+    
+    if run_type == 'xmap':
+        n = obj.num_qubits
+        xmap = _load_xmap(run_dir)
+    elif run_type == 'qcgan':
+        n = obj.num_qubits
+        xmap = None
+        for key in obj.schedule:
+            if 'X_' in key:
+                xmap = obj.schedule[key]
+                break
+        if xmap is None:
+            return html.Div("No conditional input layer found in schedule.", style={"padding": "10px"})
+    else:
+        return html.Div()
+
     bins = [format(b, f"0{n}b") for b in range(2 ** n)]
 
     cards = []
@@ -493,7 +426,6 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
         plt.close("all")
 
         cards.append(html.Div([
-            # Coloured header bar
             html.Div([
                 html.Span(f"Class {k}",
                           style={"fontWeight": "700", "fontSize": "13px",
@@ -504,7 +436,6 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
                                  "marginLeft": "6px", "fontFamily": "monospace"}),
             ], style={"background": color, "padding": "6px 10px",
                       "borderRadius": "6px 6px 0 0"}),
-            # Circuit image
             html.Div(
                 html.Img(src=f"data:image/png;base64,{img}",
                          style={"width": "100%", "height": "240px",
@@ -525,24 +456,26 @@ def _build_xmap_circuit_panels(run_dir: Path) -> html.Div:
 
     return html.Div(cards, style={"lineHeight": "0"})
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Run selector helper
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _detect_run_type(run_dir: Path) -> str:
-    """Return 'xmap' if meta.json contains num_classes, else 'qgan'."""
+    """Return 'xmap' if xmap.pkl exists, 'qcgan' if num_classes but no xmap, else 'qgan'."""
     try:
         meta = _read_metadata(run_dir)
-        return 'xmap' if 'num_classes' in meta else 'qgan'
+        if 'num_classes' in meta:
+            if (run_dir / "xmap.pkl").exists():
+                return 'xmap'
+            else:
+                return 'qcgan'
+        return 'qgan'
     except Exception:
         return 'qgan'
 
 
 def _list_runs(root: Path) -> list[str]:
-    """
-    Recursively find all run directories (containing meta.json) under root.
-    Returns a sorted list of path strings relative to root, newest first.
-    """
     if not root.exists():
         return []
     return sorted(
@@ -552,18 +485,6 @@ def _list_runs(root: Path) -> list[str]:
 
 
 def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) -> html.Div:
-    """
-    Build a collapsible folder tree from the list of run paths.
-
-    Each intermediate directory becomes an html.Details/Summary (unfoldable).
-    Each run leaf becomes a clickable row that sets the selected run via a
-    clientside callback writing to the 'selected-run' Store.
-
-    Run type is detected from meta.json and shown as a small badge:
-        QGAN  (grey)  or  CQGAN  (blue)
-    """
-    # Group runs by their top-level folder for tree construction
-    # We build a nested dict: {folder: {subfolder: ... : [run_name]}}
     def insert(tree, parts, full_path):
         if len(parts) == 1:
             tree.setdefault('__runs__', []).append(full_path)
@@ -580,7 +501,6 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
         items = []
         indent = depth * 16
 
-        # Folders first (sorted), runs after
         for key in sorted(k for k in node if k != '__runs__'):
             child_runs = _count_runs(node[key])
             summary_style = {
@@ -611,7 +531,6 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
             run_type = _detect_run_type(run_dir)
             run_name = Path(run_path).name
 
-            # Read epoch count if available
             try:
                 meta   = _read_metadata(run_dir)
                 epochs = meta.get('epochs', '?')
@@ -622,8 +541,8 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
             except Exception:
                 detail = ''
 
-            badge_color = "#4a90d9" if run_type == 'xmap' else "#888"
-            badge_label = "CQGAN" if run_type == 'xmap' else "QGAN"
+            badge_color = "#4a90d9" if run_type in ['xmap', 'qcgan'] else "#888"
+            badge_label = "CQGAN" if run_type in ['xmap', 'qcgan'] else "QGAN"
 
             is_selected = (run_path == selected)
             item_style = {
@@ -674,30 +593,6 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 class QGANDashboard:
-    """
-    Unified dashboard for QGAN and XMapQCGAN runs.
-
-    Left sidebar shows the full folder tree rooted at `root`, with collapsible
-    folders (html.Details/Summary) and clickable run items.  Each run shows a
-    type badge (QGAN / CQGAN) and epoch count read from meta.json.
-
-    Clicking a run loads it in the main panel.  The run type is auto-detected
-    and the correct graphs are shown:
-        QGAN      -> metrics + single sample plot
-        XMapQCGAN -> conditional metrics + per-class sample grid
-
-    Parameters
-    ----------
-    root         : root directory to scan recursively.  Defaults to '.'.
-    refresh_rate : live-update interval in seconds (default 2).
-
-    Usage
-    -----
-        from qgan_lamarr import QGANDashboard
-        QGANDashboard('.').run()
-        QGANDashboard('/scratch/myproject').run()
-    """
-
     def __init__(self, root: str = '.', refresh_rate: float = 2):
         self.root         = Path(root)
         self.refresh_rate = refresh_rate
@@ -797,22 +692,25 @@ class QGANDashboard:
                         'qgan', '')
             run_dir  = self.root / run_value
             run_type = _detect_run_type(run_dir)
-            label    = ('Generator ansatz' if run_type == 'xmap'
+            label    = ('Generator ansatz' if run_type in ['xmap', 'qcgan']
                         else 'Generator circuit')
             crumb    = f'📂 {run_value}'
             try:
+                if run_type == 'qcgan':
+                    label += ' (Class 0 example)'
+
                 panels = [
                     html.Details([html.Summary('Run metadata'),
                                   _build_metadata_table(run_dir)],
                                  style={'marginBottom': '20px'}),
                     html.Details([html.Summary(label),
-                                  _build_circuit_figure(run_dir)],
+                                  _build_circuit_figure(run_dir, run_type)],
                                  style={'marginBottom': '20px'}),
                 ]
-                if run_type == 'xmap' and (run_dir / 'xmap.pkl').exists():
+                if run_type in ['xmap', 'qcgan']:
                     panels.append(
                         html.Details([html.Summary('Conditional circuits per class'),
-                                      _build_xmap_circuit_panels(run_dir)],
+                                      _build_cond_circuit_panels(run_dir, run_type)],
                                      style={'marginBottom': '20px'}))
                 panels.append(
                     html.Details([html.Summary('Discriminator model'),
@@ -844,12 +742,13 @@ class QGANDashboard:
                 loss_fig  = _build_loss_figure(run_dir)
                 param_fig = _build_param_heatmap(run_dir)
                 vel_fig   = _build_param_velocity_heatmap(run_dir)
-                if run_type == 'xmap':
+                
+                if run_type in ['xmap', 'qcgan']:
                     meta        = _read_metadata(run_dir)
                     num_classes = int(meta.get('num_classes', 2))
-                    met_fig     = _build_xmap_metrics_figure(run_dir, num_classes)
-                    cards       = _build_xmap_class_samples(
-                                      run_dir, self.sampler, num_classes)
+                    met_fig     = _build_cond_metrics_figure(run_dir, num_classes, run_type)
+                    cards       = _build_cond_class_samples(
+                                      run_dir, self.sampler, num_classes, run_type)
                     return (loss_fig, met_fig, param_fig, vel_fig,
                             empty, cards, hide, show)
                 else:
