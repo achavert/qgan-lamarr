@@ -96,7 +96,7 @@ class QGAN():
         qc_gen.measure_all()
         
         if self.qmio:
-            pub = qc_gen.assign_parameters(weights_gen, inplace = True)
+            pub = qc_gen.assign_parameters(weights_gen, inplace = False)
             pub = transpile(pub, self._sampler)
             with self._sampler.backend(name='qpu') as bk:
                 job = bk.run(pub, shots = self._nshots)
