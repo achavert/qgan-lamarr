@@ -1,6 +1,6 @@
 from typing import Callable, List
 import numpy as np
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit.primitives import StatevectorSampler
 from keras import Model
 import tensorflow as tf
@@ -10,6 +10,7 @@ from tqdm import tqdm
 from .tools import dict2vector
 from . import metrics
 from scipy.spatial.distance import jensenshannon
+
 
 
 class QGAN():
@@ -43,7 +44,8 @@ class QGAN():
                  real_dist: Callable[[int, int], dict],
                  wass: bool = False,
                  callback: Callable[[np.ndarray, float], None] | None = None,
-                 seed: int = 42) -> None:
+                 seed: int = 42, 
+                 qmio: bool = False) -> None:
         
         if num_qubits is None or generator is None or discriminator is None or real_dist is None:
             raise ValueError("num_qubits, generator, discriminator and real_dist must be provided.")
@@ -57,10 +59,15 @@ class QGAN():
         self._real_dist = real_dist
         self.wass = wass
         self._callback = callback
+        self.qmio = qmio
         
 
         # Simulation parameters
-        self._sampler = StatevectorSampler()
+        if self.qmio:
+            from qmiotools.integrations.qiskitqmio import QmioBackend
+            self._sampler = QmioBackend()
+        else :
+            self._sampler = StatevectorSampler()
         self._nshots = 2**10
 
         # Training parameters
@@ -87,9 +94,18 @@ class QGAN():
         '''
         qc_gen = self._generator.copy()
         qc_gen.measure_all()
-        pub = (qc_gen, weights_gen)
-        job = self._sampler.run([pub], shots = self._nshots)
-        counts = job.result()[0].data.meas.get_counts()
+        
+        if self.qmio:
+            pub = qc_gen.assign_parameters(weights_gen, inplace = True)
+            pub = transpile(pub, self._sampler)
+            with self._sampler as bk:
+                job = bk.run(pub, shots = self._nshots)
+                counts = job.result().get_counts()
+
+        else :
+            pub = (qc_gen, weights_gen)
+            job = self._sampler.run([pub], shots = self._nshots)
+            counts = job.result()[0].data.meas.get_counts()
         return counts
            
     def real_dist_eval(self) -> dict:
