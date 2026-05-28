@@ -64,8 +64,8 @@ class QGAN():
 
         # Simulation parameters
         if self.qmio:
-            from qmio import QmioRuntimeService
-            self._sampler = QmioRuntimeService()
+            from qmiotools.integrations.qiskitqmio import QmioBackend
+            self._sampler = QmioBackend()
         else :
             self._sampler = StatevectorSampler()
         self._nshots = 2**10
@@ -97,9 +97,9 @@ class QGAN():
         
         if self.qmio:
             pub = qc_gen.assign_parameters(weights_gen, inplace = False)
-            with self._sampler.backend(name='qpu') as bk:
-                job = bk.run(pub, shots = self._nshots)
-                counts = job.result().get_counts()
+            pub = transpile(pub, self._sampler, optimization_level=2)
+            job = self._sampler.run(pub, shots = self._nshots)
+            counts = job.result().get_counts()
 
         else :
             pub = (qc_gen, weights_gen)
