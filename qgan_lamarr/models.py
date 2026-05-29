@@ -103,7 +103,7 @@ class QGAN():
         qc_gen = self._generator.copy()
         qc_gen.measure_all()
         
-        if self.qmio:
+        if self.backend is not None:
             pub = qc_gen.assign_parameters(weights_gen, inplace = False)
             pub = transpile(pub, self._sampler, optimization_level=2)
             job = self._sampler.run(pub, shots = self._nshots)
