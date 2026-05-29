@@ -136,6 +136,9 @@ def _build_circuit_figure(run_dir: Path, run_type: str = 'qgan'):
                 qc = qc.compose(obj.schedule[key][0])
             elif 'G_' in key:
                 qc = qc.compose(obj.schedule[key])
+            elif 'Z_' in key:
+                # Show noise layer with symbolic (unbound) parameters
+                qc = qc.compose(obj.schedule[key])
     else:
         qc = obj
 
@@ -271,6 +274,11 @@ def _cond_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
                 qc_run = qc_run.compose(obj.schedule[key][label])
             elif 'G_' in key:
                 qc_run = qc_run.compose(obj.schedule[key])
+            elif 'Z_' in key:
+                qc_noise = obj.schedule[key].copy()
+                noise_params = np.random.uniform(-np.pi, np.pi, qc_noise.num_parameters)
+                qc_noise = qc_noise.assign_parameters(noise_params, inplace=False)
+                qc_run = qc_run.compose(qc_noise)
     else:
         return {}
 
@@ -337,7 +345,9 @@ def _build_cond_metrics_figure(run_dir: Path, num_classes: int, run_type: str):
         fig.add_hline(y=mean_js + std_js, line_dash="dot", line_color="lightgray")
         fig.add_hline(y=max(0., mean_js - std_js), line_dash="dot", line_color="lightgray")
 
-    title = "Conditional metrics — QCGAN" if run_type == 'qcgan' else "Conditional metrics — XMapQCGAN"
+    title = ("Conditional metrics — QCGAN+Z" if run_type == 'qcgan_noise' else
+             "Conditional metrics — QCGAN"    if run_type == 'qcgan' else
+             "Conditional metrics — XMapQCGAN")
     fig.update_layout(
         title=title,
         xaxis_title="Epoch",
@@ -462,15 +472,18 @@ def _build_cond_circuit_panels(run_dir: Path, run_type: str) -> html.Div:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _detect_run_type(run_dir: Path) -> str:
-    """Return 'xmap' if xmap.pkl exists, 'qcgan' if num_classes but no xmap, else 'qgan'."""
+    """Return 'xmap', 'qcgan_noise', 'qcgan', or 'qgan' by inspecting saved artefacts."""
     try:
         meta = _read_metadata(run_dir)
-        if 'num_classes' in meta:
-            if (run_dir / "xmap.pkl").exists():
-                return 'xmap'
-            else:
-                return 'qcgan'
-        return 'qgan'
+        if 'num_classes' not in meta:
+            return 'qgan'
+        if (run_dir / "xmap.pkl").exists():
+            return 'xmap'
+        # Inspect the pickled CondGenerator1D schedule for Z_ noise layers
+        circuit_obj = _load_circuit(run_dir)
+        if any('Z_' in k for k in getattr(circuit_obj, 'schedule', {})):
+            return 'qcgan_noise'
+        return 'qcgan'
     except Exception:
         return 'qgan'
 
@@ -541,8 +554,10 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
             except Exception:
                 detail = ''
 
-            badge_color = "#4a90d9" if run_type in ['xmap', 'qcgan'] else "#888"
-            badge_label = "CQGAN" if run_type in ['xmap', 'qcgan'] else "QGAN"
+            badge_color = ("#4a90d9" if run_type in ['xmap', 'qcgan', 'qcgan_noise'] else
+                           "#7b3fb5" if run_type == 'qcgan_noise' else "#888")
+            badge_label = ("CQGAN+Z" if run_type == 'qcgan_noise' else
+                           "CQGAN"   if run_type in ['xmap', 'qcgan', 'qcgan_noise'] else "QGAN")
 
             is_selected = (run_path == selected)
             item_style = {
@@ -692,7 +707,7 @@ class QGANDashboard:
                         'qgan', '')
             run_dir  = self.root / run_value
             run_type = _detect_run_type(run_dir)
-            label    = ('Generator ansatz' if run_type in ['xmap', 'qcgan']
+            label    = ('Generator ansatz' if run_type in ['xmap', 'qcgan', 'qcgan_noise']
                         else 'Generator circuit')
             crumb    = f'📂 {run_value}'
             try:
@@ -707,7 +722,7 @@ class QGANDashboard:
                                   _build_circuit_figure(run_dir, run_type)],
                                  style={'marginBottom': '20px'}),
                 ]
-                if run_type in ['xmap', 'qcgan']:
+                if run_type in ['xmap', 'qcgan', 'qcgan_noise']:
                     panels.append(
                         html.Details([html.Summary('Conditional circuits per class'),
                                       _build_cond_circuit_panels(run_dir, run_type)],
@@ -743,7 +758,7 @@ class QGANDashboard:
                 param_fig = _build_param_heatmap(run_dir)
                 vel_fig   = _build_param_velocity_heatmap(run_dir)
                 
-                if run_type in ['xmap', 'qcgan']:
+                if run_type in ['xmap', 'qcgan', 'qcgan_noise']:
                     meta        = _read_metadata(run_dir)
                     num_classes = int(meta.get('num_classes', 2))
                     met_fig     = _build_cond_metrics_figure(run_dir, num_classes, run_type)
@@ -1080,6 +1095,11 @@ def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
                     qc = qc.compose(circuit_obj.schedule[key][c])
                 elif "G_" in key:
                     qc = qc.compose(circuit_obj.schedule[key])
+                elif "Z_" in key:
+                    qc_noise = circuit_obj.schedule[key].copy()
+                    noise_params = np.random.uniform(-np.pi, np.pi, qc_noise.num_parameters)
+                    qc_noise = qc_noise.assign_parameters(noise_params, inplace=False)
+                    qc = qc.compose(qc_noise)
         qc.measure_all()
         param_dict = dict(zip(qc.parameters, final_weights))
         job = sampler.run([(qc, param_dict)], shots=shots)
@@ -1223,7 +1243,7 @@ class EvaluationDashboard:
                      _build_model_plot(self.run_dir),
                      open_=False),
         ]
-        if run_type in ["xmap", "qcgan"]:
+        if run_type in ["xmap", "qcgan", "qcgan_noise"]:
             static_panels.append(
                 _section("Conditional circuits per class",
                          _build_cond_circuit_panels(self.run_dir, run_type),

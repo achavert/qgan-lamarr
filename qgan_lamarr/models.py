@@ -355,10 +355,10 @@ class CondGenerator1D:
             _xmap = xmap
         self.schedule.update({f'X_{self.input_cnt}' : _xmap}); self.input_cnt += 1
 
-    def add_random_layer(self, qcz : QuantumCircuit) -> None:  
+    def add_noise_layer(self, qcz : QuantumCircuit) -> None:  
         if qcz.num_qubits != self.num_qubits:
             raise ValueError('Layer qubit number not matching the circuit')  
-        self.schedule.update({f'Z_{self.self.noise_layer}' : qcz}); self.self.noise_layer += 1
+        self.schedule.update({f'Z_{self.noise_layer}' : qcz}); self.noise_layer += 1
         
 
     def prepare_xmap(self):
@@ -444,9 +444,9 @@ class QCGAN(QGAN):
                 qc_ansatz = self._generator.schedule[_key]
                 qc_g = qc_g.compose(qc_ansatz)
             elif 'Z_' in _key:
-                qc_noise = self._generator.schedule[_key]
-                noise_params = np.random.uniform(-np.pi, np.pi)
-                qc_noise.assign_parameters(noise_params, inplace = True)
+                qc_noise = self._generator.schedule[_key].copy()
+                noise_params = np.random.uniform(-np.pi, np.pi, qc_noise.num_parameters)
+                qc_noise = qc_noise.assign_parameters(noise_params, inplace = False)
                 qc_g = qc_g.compose(qc_noise)
         qc_g.measure_all()
         return qc_g 
