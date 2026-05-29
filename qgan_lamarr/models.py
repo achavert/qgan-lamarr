@@ -45,7 +45,7 @@ class QGAN():
                  wass: bool = False,
                  callback: Callable[[np.ndarray, float], None] | None = None,
                  seed: int = 42, 
-                 qmio_backend: bool = False) -> None:
+                 backend: str | None = None) -> None:
         
         if num_qubits is None or generator is None or discriminator is None or real_dist is None:
             raise ValueError("num_qubits, generator, discriminator and real_dist must be provided.")
@@ -59,16 +59,23 @@ class QGAN():
         self._real_dist = real_dist
         self.wass = wass
         self._callback = callback
-        self.qmio = qmio_backend
+        self.backend = backend
         
 
         # Simulation parameters
-        if self.qmio:
+        if self.backend is None :
+            self._sampler = StatevectorSampler()
+
+        elif self.backend == 'QMIO':
             from qmio import QmioRuntimeService
             from qmiotools.integrations.qiskitqmio import QmioBackend
             self._sampler = QmioBackend()
-        else :
-            self._sampler = StatevectorSampler()
+
+        elif self.backend == 'FAKE_QMIO':
+            from qmio import QmioRuntimeService
+            from qmiotools.integrations.qiskitqmio import FakeQmio
+            self._sampler = FakeQmio("/opt/cesga/qmio/hpc/calibrations/2026_05_29__13_00_02.json", gate_error = True, readout_error = True)
+            
         self._nshots = 2**10
 
         # Training parameters
