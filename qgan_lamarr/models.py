@@ -67,10 +67,8 @@ class QGAN():
             from qmio import QmioRuntimeService
             from qmiotools.integrations.qiskitqmio import QmioBackend
             self._sampler = QmioBackend()
-            self._qct = transpile(self._generator.copy(), self._sampler, optimization_level=2)
         else :
             self._sampler = StatevectorSampler()
-            self._qct = self._generator.copy()
         self._nshots = 2**10
 
         # Training parameters
@@ -95,11 +93,12 @@ class QGAN():
         '''
         Samples the generator circuit for the input weights, returns counts from measurement
         '''
-        qc_gen = self._qct
+        qc_gen = self._generator.copy()
         qc_gen.measure_all()
         
         if self.qmio:
             pub = qc_gen.assign_parameters(weights_gen, inplace = False)
+            pub = transpile(pub, self._sampler, optimization_level=2)
             job = self._sampler.run(pub, shots = self._nshots)
             counts = job.result().get_counts()
 
