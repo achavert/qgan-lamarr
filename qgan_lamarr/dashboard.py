@@ -128,7 +128,7 @@ def _build_metadata_table(run_dir: Path):
 def _build_circuit_figure(run_dir: Path, run_type: str = 'qgan'):
     obj = _load_circuit(run_dir)
     
-    if run_type == 'qcgan':
+    if run_type in ('qcgan', 'qcgan_noise'):
         # obj is CondGenerator1D: Reconstruct example circuit for class 0
         qc = QuantumCircuit(obj.num_qubits)
         for key in obj.schedule:
@@ -267,7 +267,7 @@ def _cond_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
         qc = obj
         xmap = _load_xmap(run_dir)
         qc_run = xmap[label].compose(qc, range(qc.num_qubits))
-    elif run_type == 'qcgan':
+    elif run_type in ('qcgan', 'qcgan_noise'):
         qc_run = QuantumCircuit(obj.num_qubits)
         for key in obj.schedule:
             if 'X_' in key:
@@ -410,7 +410,7 @@ def _build_cond_circuit_panels(run_dir: Path, run_type: str) -> html.Div:
     if run_type == 'xmap':
         n = obj.num_qubits
         xmap = _load_xmap(run_dir)
-    elif run_type == 'qcgan':
+    elif run_type in ('qcgan', 'qcgan_noise'):
         n = obj.num_qubits
         xmap = None
         for key in obj.schedule:
@@ -554,10 +554,10 @@ def _build_tree(root: Path, all_runs: list[str], selected: str | None = None) ->
             except Exception:
                 detail = ''
 
-            badge_color = ("#4a90d9" if run_type in ['xmap', 'qcgan', 'qcgan_noise'] else
-                           "#7b3fb5" if run_type == 'qcgan_noise' else "#888")
+            badge_color = ("#7b3fb5" if run_type == 'qcgan_noise' else
+                           "#4a90d9" if run_type in ('xmap', 'qcgan') else "#888")
             badge_label = ("CQGAN+Z" if run_type == 'qcgan_noise' else
-                           "CQGAN"   if run_type in ['xmap', 'qcgan', 'qcgan_noise'] else "QGAN")
+                           "CQGAN"   if run_type in ('xmap', 'qcgan') else "QGAN")
 
             is_selected = (run_path == selected)
             item_style = {
@@ -711,7 +711,7 @@ class QGANDashboard:
                         else 'Generator circuit')
             crumb    = f'📂 {run_value}'
             try:
-                if run_type == 'qcgan':
+                if run_type in ('qcgan', 'qcgan_noise'):
                     label += ' (Class 0 example)'
 
                 panels = [
@@ -1088,7 +1088,7 @@ def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
             qc = circuit_obj.copy()
         elif run_type == "xmap":
             qc = xmap[c].compose(circuit_obj, range(num_qubits))
-        elif run_type == "qcgan":
+        elif run_type in ("qcgan", "qcgan_noise"):
             qc = QuantumCircuit(num_qubits)
             for key in circuit_obj.schedule:
                 if "X_" in key:
