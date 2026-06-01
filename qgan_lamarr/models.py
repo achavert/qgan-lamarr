@@ -367,9 +367,8 @@ class CondGenerator1D:
             raise ValueError('Layer qubit number not matching the circuit')  
 
         self.schedule.update({f'Z_{self.noise_layer}' : {'circuit' : qcz,
-                                                         'range' : noise_range
-                                                        } 
-                                  }); self.noise_layer += 1
+                                                         'range' : noise_range}})
+        self.noise_layer += 1
         
 
     def prepare_xmap(self):

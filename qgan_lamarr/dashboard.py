@@ -138,7 +138,7 @@ def _build_circuit_figure(run_dir: Path, run_type: str = 'qgan'):
                 qc = qc.compose(obj.schedule[key])
             elif 'Z_' in key:
                 # Show noise layer with symbolic (unbound) parameters
-                qc = qc.compose(obj.schedule[key])
+                qc = qc.compose(obj.schedule[key]['circuit'])
     else:
         qc = obj
 
