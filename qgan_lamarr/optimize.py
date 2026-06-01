@@ -80,12 +80,12 @@ class AdamOptimizerPSR():
 
     def step(self, _loss_function, _params):
         if self.a is None:
-            self.a = np.zeros_like(_params)
+            self.a = np.array(np.zeros_like(_params), dtype=float)
         else:
             if len(self.a) != len(_params):
                 raise ValueError('Lenght of momenta a not maching the number of parameters')
         if self.b is None:
-            self.b = np.zeros_like(_params)
+            self.b = np.array(np.zeros_like(_params), dtype=float)
         else:
             if len(self.b) != len(_params):
                 raise ValueError('Lenght of momenta b not maching the number of parameters')
