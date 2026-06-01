@@ -28,10 +28,16 @@ class QGAN_optimizer():
             beta1 = self.kargs.get('beta1', 0.9)
             beta2 = self.kargs.get('beta2', 0.99)
             eps = self.kargs.get('eps', 1e-08)
+            a = self.kargs.get('a', None)
+            b = self.kargs.get('b', None)
+            t = self.kargs.get('t', None)
             self.optimizer = AdamOptimizerPSR(lr = lr,
                                               beta1 = beta1,
                                               beta2 = beta2,
-                                              eps = eps)
+                                              eps = eps,
+                                              a = a,
+                                              b = b,
+                                              t = t)
         
             
     def step(self, _generator_loss, _weights_gen):
