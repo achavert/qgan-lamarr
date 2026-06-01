@@ -288,9 +288,9 @@ class QGAN():
             '''
 
             if opt_manager:
-                print(f'--------| t : {optimizer.t} |---------')
-                print(f'a : {optimizer.a}')
-                print(f'b : {optimizer.b}')
+                print(f'--------| t : {optimizer.optimizer.t} |---------')
+                print(f'a : {optimizer.optimizer.a}')
+                print(f'b : {optimizer.optimizer.b}')
 
                 
         self._trained_generator_weights = weights_gen  
