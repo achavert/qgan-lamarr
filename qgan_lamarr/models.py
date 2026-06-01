@@ -395,7 +395,7 @@ class CondGenerator1D:
             elif 'X_' in key:
                 print('Input layer: '+key+f' ')
             if 'Z_' in key:
-                print('Noise layer: '+key+f' | num_param : {self.schedule[key]['circuit'].num_parameters}'+f' | noise range : {self.schedule[key]['range']}')
+                print('Noise layer: '+key+f' | num_param : {self.schedule[key]["circuit"].num_parameters}'+f' | noise range : {self.schedule[key]["range"]}')
             print('')
         print('____________________________')
 
