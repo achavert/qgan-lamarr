@@ -58,20 +58,34 @@ class AdamOptimizerPSR():
                  lr = 0.1,
                  beta1 = 0.9,
                  beta2 = 0.99,
-                 eps = 1e-08):
+                 eps = 1e-08,
+                 a = None,
+                 b = None,
+                 t = None):
         self.lr = lr
         self.beta1 = beta1
         self.beta2 = beta2
         self.eps = eps
 
-        self.t = 0
-        self.a = None
-        self.b = None
+        
+        self.a = a
+        self.b = b
+        self.t = t
 
     def step(self, _loss_function, _params):
         if self.a is None:
             self.a = np.zeros_like(_params)
+        else:
+            if len(self.a) != len(_params):
+                raise ValueError('Lenght of momenta a not maching the number of parameters')
+        if self.b is None:
             self.b = np.zeros_like(_params)
+        else:
+            if len(self.b) != len(_params):
+                raise ValueError('Lenght of momenta b not maching the number of parameters')
+        if self.t is None:
+            self.t = 0
+        
         self.t += 1    
         grads = parameter_shift_rule(_loss_function, _params)
 
@@ -86,6 +100,7 @@ class AdamOptimizerPSR():
         new_loss = _loss_function(new_params)
 
         return new_params, new_loss
+
         
             
         

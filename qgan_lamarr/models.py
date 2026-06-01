@@ -214,6 +214,7 @@ class QGAN():
             shots: int | None = None,
             initial_weights: np.ndarray | None = None,
             manager: bool | None = None,
+            opt_manager : bool = False,
             opt: str | None = 'ADAM_PSR',
             **opt_args):
 
@@ -279,7 +280,19 @@ class QGAN():
             if manager:
                 _metrics = {key: self.metrics[key][stp] for key in self.metrics.keys()}
                 self.manage(stp, weights_gen, g_loss_val, d_loss_val, _metrics)
-        
+            
+            '''
+                ----------------------------------------
+                QMIO testing for optimizer re-upload
+                ----------------------------------------
+            '''
+
+            if opt_manager:
+                print(f'--------| t : {optimizer.t} |---------')
+                print(f'a : {optimizer.a}')
+                print(f'b : {optimizer.b}')
+
+                
         self._trained_generator_weights = weights_gen  
 
         
