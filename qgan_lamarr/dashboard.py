@@ -102,7 +102,7 @@ def _sample_circuit(run_dir: Path, sampler: StatevectorSampler,
     qc_run = qc.copy()
     qc_run.measure_all()
     param_dict = dict(zip(qc.parameters, params[-1]))
-    job = sampler.run([(qc_run, param_dict)], shots=shots)
+    job = sampler.run([(qc_run, param_dict)], shots = shots)
     return job.result()[0].data.meas.get_counts()
 
 
@@ -275,8 +275,9 @@ def _cond_sample_circuit(run_dir: Path, sampler: StatevectorSampler,
             elif 'G_' in key:
                 qc_run = qc_run.compose(obj.schedule[key])
             elif 'Z_' in key:
-                qc_noise = obj.schedule[key].copy()
-                noise_params = np.random.uniform(-np.pi, np.pi, qc_noise.num_parameters)
+                qc_noise = obj.schedule[key]['circuit'].copy()
+                ns_range = obj.schedule[key]['range']
+                noise_params = np.random.uniform(ns_range[0], ns_range[1], qc_noise.num_parameters)
                 qc_noise = qc_noise.assign_parameters(noise_params, inplace=False)
                 qc_run = qc_run.compose(qc_noise)
     else:
