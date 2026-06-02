@@ -78,8 +78,8 @@ class QGAN():
             from qmiotools.integrations.qiskitqmio import FakeQmio
             self._sampler = FakeQmio("/opt/cesga/qmio/hpc/calibrations/2026_05_29__13_00_02.json", gate_error = True, readout_error = True)
             
-        elif self.backend is fake_backend.FakeBackendV2:
-            self._sampler = SamplerV2(self.backend)
+        else :
+            self._sampler = self.backend
 
         self._nshots = 2**10
 
@@ -113,17 +113,11 @@ class QGAN():
             job = self._sampler.run([pub], shots = self._nshots)
             counts = job.result()[0].data.meas.get_counts()
         
-        elif self.backend == 'QMIO' or self.backend == 'FAKE_QMIO':
+        else :
             pub = qc_gen.assign_parameters(weights_gen, inplace = False)
             pub = transpile(pub, self._sampler, optimization_level = 2)
             job = self._sampler.run(pub, shots = self._nshots)
             counts = job.result().get_counts()
-
-        elif self.backend is fake_backend.FakeBackendV2:
-            pub = qc_gen.assign_parameters(weights_gen, inplace = False)
-            pub = transpile(pub, self.backend, optimization_level = 2)
-            job = self._sampler.run([pub], shots = self._nshots)
-            counts = job.result()[0].data.meas.get_counts()
         
         return counts
            
