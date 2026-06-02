@@ -2,6 +2,8 @@ from typing import Callable, List
 import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit.primitives import StatevectorSampler
+from qiskit_ibm_runtime.fake_provider import fake_backend
+from qiskit_ibm_runtime import SamplerV2
 from keras import Model
 import tensorflow as tf
 from .optimize import QGAN_optimizer
@@ -45,7 +47,7 @@ class QGAN():
                  wass: bool = False,
                  callback: Callable[[np.ndarray, float], None] | None = None,
                  seed: int = 42, 
-                 backend: str | None = None) -> None:
+                 backend: str | fake_backend.FakeBackendV2 | None = None) -> None:
         
         if num_qubits is None or generator is None or discriminator is None or real_dist is None:
             raise ValueError("num_qubits, generator, discriminator and real_dist must be provided.")
@@ -76,6 +78,9 @@ class QGAN():
             from qmiotools.integrations.qiskitqmio import FakeQmio
             self._sampler = FakeQmio("/opt/cesga/qmio/hpc/calibrations/2026_05_29__13_00_02.json", gate_error = True, readout_error = True)
             
+        else :
+            self._sampler = SamplerV2(self.backend)
+
         self._nshots = 2**10
 
         # Training parameters
@@ -102,17 +107,24 @@ class QGAN():
         '''
         qc_gen = self._generator.copy()
         qc_gen.measure_all()
+
+        if self.backend is None:
+            pub = (qc_gen, weights_gen)
+            job = self._sampler.run([pub], shots = self._nshots)
+            counts = job.result()[0].data.meas.get_counts()
         
-        if self.backend is not None:
+        elif self.backend == 'QMIO' or self.backend == 'FAKE_QMIO':
             pub = qc_gen.assign_parameters(weights_gen, inplace = False)
-            pub = transpile(pub, self._sampler, optimization_level=2)
+            pub = transpile(pub, self._sampler, optimization_level = 2)
             job = self._sampler.run(pub, shots = self._nshots)
             counts = job.result().get_counts()
 
         else :
-            pub = (qc_gen, weights_gen)
+            pub = qc_gen.assign_parameters(weights_gen, inplace = False)
+            pub = transpile(pub, self.backend, optimization_level = 2)
             job = self._sampler.run([pub], shots = self._nshots)
             counts = job.result()[0].data.meas.get_counts()
+        
         return counts
            
     def real_dist_eval(self) -> dict:
