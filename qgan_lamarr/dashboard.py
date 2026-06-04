@@ -17,9 +17,10 @@ import tempfile
 
 import numpy as np
 import pickle
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit.primitives import StatevectorSampler
 from qiskit.visualization import circuit_drawer
+from qiskit_ibm_runtime.fake_provider import fake_backend
 import tensorflow as tf
 
 _CLASS_COLORS = [
@@ -1058,10 +1059,46 @@ def _eval_histogram_figure(results: dict, meta: dict) -> str:
     return _fig_to_b64(fig)
 
 
-def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
+def _build_sampler(backend: str | fake_backend.FakeBackendV2 | None):
+    """
+    Mirrors QGAN.__init__ backend selection logic.
+    Returns (sampler, use_statevector: bool).
+    use_statevector=True  → StatevectorSampler path (pub tuple + .data.meas)
+    use_statevector=False → hardware/fake path (transpile + assign_parameters + .get_counts)
+    """
+    if backend is None:
+        return StatevectorSampler(), True
+
+    if backend == "QMIO":
+        from qmio import QmioRuntimeService
+        from qmiotools.integrations.qiskitqmio import QmioBackend
+        return QmioBackend(), False
+
+    if backend == "FAKE_QMIO":
+        from qmio import QmioRuntimeService
+        from qmiotools.integrations.qiskitqmio import FakeQmio
+        return (FakeQmio(
+            "/opt/cesga/qmio/hpc/calibrations/2026_05_29__13_00_02.json",
+            gate_error=True, readout_error=True), False)
+
+    # Custom backend object passed directly
+    return backend, False
+
+
+def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20,
+                        backend: str | fake_backend.FakeBackendV2 | None = None) -> dict:
     """
     Thin wrapper around tools.evaluate_model that also retains the per-class
     raw probability vectors needed for the histogram figure.
+
+    For non-conditional QGAN runs, ``backend`` selects the simulation backend
+    using the same logic as ``QGAN.__init__``:
+      - ``None``        → ideal statevector simulation (default)
+      - ``'FAKE_QMIO'`` → noisy fake backend with calibration file
+      - ``'QMIO'``      → real QMIO hardware
+      - any object      → used directly as a Qiskit-compatible backend
+    Conditional models (xmap / qcgan / qcgan_noise) always use
+    StatevectorSampler regardless of this argument.
     """
     from .tools import dict2vector
     from .metrics import jensen_shannon, fidelity
@@ -1082,7 +1119,12 @@ def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
 
     circuit_obj = _load_circuit(run_dir)
     xmap        = _load_xmap(run_dir) if run_type == "xmap" else None
-    sampler     = StatevectorSampler()
+
+    # Conditional models always use StatevectorSampler; backend only applies to plain QGAN.
+    if run_type == "qgan":
+        sampler, use_statevector = _build_sampler(backend)
+    else:
+        sampler, use_statevector = StatevectorSampler(), True
 
     def sample_model(c=0):
         if run_type == "qgan":
@@ -1102,9 +1144,17 @@ def _run_evaluate_model(run_dir: Path, real_dist, n_reps: int = 20) -> dict:
                     qc_noise = qc_noise.assign_parameters(noise_params, inplace=False)
                     qc = qc.compose(qc_noise)
         qc.measure_all()
-        param_dict = dict(zip(qc.parameters, final_weights))
-        job = sampler.run([(qc, param_dict)], shots=shots)
-        return job.result()[0].data.meas.get_counts()
+        if use_statevector:
+            # StatevectorSampler path — matches QGAN.generator_eval backend=None branch
+            param_dict = dict(zip(qc.parameters, final_weights))
+            job = sampler.run([(qc, param_dict)], shots=shots)
+            return job.result()[0].data.meas.get_counts()
+        else:
+            # Hardware/fake path — matches QGAN.generator_eval backend!=None branch
+            qc_bound = qc.assign_parameters(final_weights, inplace=False)
+            qc_transpiled = transpile(qc_bound, sampler, optimization_level=2)
+            job = sampler.run(qc_transpiled, shots=shots)
+            return job.result().get_counts()
 
     def sample_real(c=0):
         if is_cond:
@@ -1205,12 +1255,28 @@ class EvaluationDashboard:
     n_reps : int
         Number of repetitions used to estimate evaluation uncertainties.
         Defaults to 20.
+    backend : str or FakeBackendV2 or None
+        Simulation backend for non-conditional QGAN runs.  Mirrors the
+        backend argument of QGAN.__init__:
+
+        * None (default) — ideal statevector simulation via
+          StatevectorSampler.
+        * 'FAKE_QMIO' — noisy fake backend loaded from the CESGA
+          calibration file (gate + readout errors).
+        * 'QMIO' — real QMIO hardware via QmioBackend.
+        * any Qiskit-compatible backend object — used directly.
+
+        Ignored for conditional models (xmap / qcgan / qcgan_noise), which
+        always run on StatevectorSampler.  The backend can also be
+        overridden at evaluation time via the in-dashboard dropdown.
     """
 
-    def __init__(self, run_dir: str, real_dist, n_reps: int = 20):
+    def __init__(self, run_dir: str, real_dist, n_reps: int = 20,
+                 backend: "str | fake_backend.FakeBackendV2 | None" = None):
         self.run_dir   = Path(run_dir)
         self.real_dist = real_dist
         self.n_reps    = n_reps
+        self.backend   = backend   # mirrors QGAN(backend=...) — None → StatevectorSampler
         self.app       = dash.Dash(__name__)
         self._setup_layout()
         self._setup_callbacks()
@@ -1265,12 +1331,49 @@ class EvaluationDashboard:
         ]
 
         # ── Evaluate button + results placeholder ──
+        # Backend selector — only meaningful for plain QGAN runs.
+        _is_qgan = (run_type == "qgan")
+        _backend_options = [
+            {"label": "Statevector (ideal)",   "value": "statevector"},
+            {"label": "FAKE_QMIO (noisy sim)", "value": "FAKE_QMIO"},
+            {"label": "QMIO (real hardware)",  "value": "QMIO"},
+        ]
+        # Derive the default value that matches self.backend
+        if self.backend is None:
+            _default_backend = "statevector"
+        elif isinstance(self.backend, str):
+            _default_backend = self.backend   # 'FAKE_QMIO' or 'QMIO'
+        else:
+            # Custom object — keep statevector as the dropdown default;
+            # the stored self.backend will still be used when the callback
+            # reads it via the dcc.Store below.
+            _default_backend = "statevector"
+
+        backend_selector = html.Div([
+            html.Label("Simulation backend",
+                       style={"fontWeight": "600", "fontSize": "13px",
+                              "marginBottom": "6px", "display": "block"}),
+            dcc.Dropdown(
+                id="eval-backend-dropdown",
+                options=_backend_options,
+                value=_default_backend,
+                clearable=False,
+                style={"width": "260px", "fontSize": "13px",
+                       "marginBottom": "16px"}),
+            html.P(
+                "Conditional models always use Statevector regardless of this setting.",
+                style={"color": "#aaa", "fontSize": "11px", "marginTop": "-10px",
+                       "marginBottom": "14px",
+                       "display": "block" if not _is_qgan else "none"}),
+        ], style={"display": "block" if _is_qgan else "none"})
+
         eval_panel = html.Div([
             html.H2("Evaluation", style={"marginBottom": "12px"}),
             html.P(
                 f"Shots from metadata: {meta.get('shots', 1024)}   |   "
                 f"Repetitions: {self.n_reps}",
                 style={"color": "#555", "fontSize": "13px", "marginBottom": "16px"}),
+            backend_selector,
             html.Button(
                 "▶  Run evaluation",
                 id="eval-btn",
@@ -1307,15 +1410,34 @@ class EvaluationDashboard:
             Output("eval-results", "children"),
             Output("eval-status",  "children"),
             Input("eval-btn",      "n_clicks"),
+            State("eval-backend-dropdown", "value"),
             prevent_initial_call=True)
-        def run_evaluation(n_clicks):
+        def run_evaluation(n_clicks, backend_value):
             if not n_clicks:
                 return dash.no_update, dash.no_update
 
+            # Resolve backend: dropdown controls named backends; for custom
+            # objects passed at construction time we keep self.backend.
+            if backend_value == "statevector":
+                backend = None
+            elif backend_value in ("FAKE_QMIO", "QMIO"):
+                backend = backend_value
+            else:
+                # Dropdown returned something unexpected — fall back to
+                # whatever was passed at construction time.
+                backend = self.backend
+
             try:
                 results = _run_evaluate_model(
-                    self.run_dir, self.real_dist, n_reps=self.n_reps)
+                    self.run_dir, self.real_dist, n_reps=self.n_reps,
+                    backend=backend)
                 meta    = results["metadata"]
+
+                backend_label = {
+                    None:        "Statevector (ideal)",
+                    "FAKE_QMIO": "FAKE_QMIO (noisy sim)",
+                    "QMIO":      "QMIO (real hardware)",
+                }.get(backend, repr(backend))
 
                 hist_b64 = _eval_histogram_figure(results, meta)
 
@@ -1331,7 +1453,8 @@ class EvaluationDashboard:
                                "distributions with ±1σ uncertainties."),
                 ])
                 status = (f"✓ Evaluation complete — "
-                          f"{self.n_reps} reps × {meta.get('shots', '?')} shots.")
+                          f"{self.n_reps} reps × {meta.get('shots', '?')} shots "
+                          f"| backend: {backend_label}")
                 return summary, status
 
             except Exception as exc:
