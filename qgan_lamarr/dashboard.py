@@ -1338,16 +1338,18 @@ class EvaluationDashboard:
             {"label": "FAKE_QMIO (noisy sim)", "value": "FAKE_QMIO"},
             {"label": "QMIO (real hardware)",  "value": "QMIO"},
         ]
-        # Derive the default value that matches self.backend
+        # Derive the default value that matches self.backend.
+        # For a custom object, inject a dedicated option so it appears
+        # selected in the dropdown instead of silently showing "Statevector".
         if self.backend is None:
             _default_backend = "statevector"
         elif isinstance(self.backend, str):
             _default_backend = self.backend   # 'FAKE_QMIO' or 'QMIO'
         else:
-            # Custom object — keep statevector as the dropdown default;
-            # the stored self.backend will still be used when the callback
-            # reads it via the dcc.Store below.
-            _default_backend = "statevector"
+            _custom_label = type(self.backend).__name__
+            _backend_options.append(
+                {"label": f"{_custom_label} (custom)", "value": "__custom__"})
+            _default_backend = "__custom__"
 
         backend_selector = html.Div([
             html.Label("Simulation backend",
@@ -1416,15 +1418,15 @@ class EvaluationDashboard:
             if not n_clicks:
                 return dash.no_update, dash.no_update
 
-            # Resolve backend: dropdown controls named backends; for custom
-            # objects passed at construction time we keep self.backend.
+            # Resolve backend: dropdown controls named backends; custom
+            # object backends use the sentinel value "__custom__" which maps
+            # back to self.backend (the object passed at construction time).
             if backend_value == "statevector":
                 backend = None
             elif backend_value in ("FAKE_QMIO", "QMIO"):
                 backend = backend_value
             else:
-                # Dropdown returned something unexpected — fall back to
-                # whatever was passed at construction time.
+                # "__custom__" or anything unexpected → use the stored object.
                 backend = self.backend
 
             try:
@@ -1433,11 +1435,14 @@ class EvaluationDashboard:
                     backend=backend)
                 meta    = results["metadata"]
 
-                backend_label = {
-                    None:        "Statevector (ideal)",
-                    "FAKE_QMIO": "FAKE_QMIO (noisy sim)",
-                    "QMIO":      "QMIO (real hardware)",
-                }.get(backend, repr(backend))
+                if backend is None:
+                    backend_label = "Statevector (ideal)"
+                elif backend == "FAKE_QMIO":
+                    backend_label = "FAKE_QMIO (noisy sim)"
+                elif backend == "QMIO":
+                    backend_label = "QMIO (real hardware)"
+                else:
+                    backend_label = f"{type(backend).__name__} (custom)"
 
                 hist_b64 = _eval_histogram_figure(results, meta)
 
